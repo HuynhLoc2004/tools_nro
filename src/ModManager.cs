@@ -236,18 +236,6 @@ public class ModManager : IActionListener
 	public static long lastTeleportRequestMapTime = 0L;
 	public static int teleportRequestCount = 0;
 
-	// Thuật toán Lướt Cực Tốc An Toàn (Safe Sonic Dash - Không giật lag, không bay về nhà, không mất kết nối [4] khi KHÔNG có TDLT)
-	public static bool isDashing = false;
-	public static int dashStartX = -1;
-	public static int dashStartY = -1;
-	public static int dashTargetX = -1;
-	public static int dashTargetY = -1;
-	public static Waypoint dashTargetWp = null;
-	public static int dashStepIndex = 0;
-	public static int dashTotalSteps = 0;
-	public static long lastDashStepTime = 0L;
-	public static long dashStartTime = 0L;
-
 	public static bool isMapChangeCooldown()
 	{
 		return mSystem.currentTimeMillis() - lastChangeMapSuccessTime < 600L;
@@ -260,8 +248,6 @@ public class ModManager : IActionListener
 		lastChangeMapFromMapId = TileMap.mapID;
 		currentTeleportWaypoint = null;
 		teleportRequestCount = 0;
-		isDashing = false;
-		dashTargetWp = null;
 		Char.ischangingMap = false;
 		Char.isLockKey = false;
 		InfoDlg.hide();
@@ -698,74 +684,6 @@ public class ModManager : IActionListener
 					}
 				}
 			}
-
-			// 9. Cập nhật Lướt Cực Tốc An Toàn (khi KHÔNG CÓ TDLT)
-			if (isDashing)
-			{
-				if (now - dashStartTime > 2500L)
-				{
-					isDashing = false;
-					dashTargetWp = null;
-					Char.isLockKey = false;
-				}
-				else if (now - lastDashStepTime >= 55L) // Đúng nhịp an toàn 55ms (~18 bước/s), server không kick [4]
-				{
-					lastDashStepTime = now;
-					dashStepIndex++;
-					Char myChar = Char.myCharz();
-					if (myChar != null)
-					{
-						if (dashStepIndex >= dashTotalSteps)
-						{
-							// Đã đến đích an toàn!
-							isDashing = false;
-							myChar.cx = dashTargetX;
-							myChar.cy = dashTargetY;
-							myChar.cvx = 0;
-							myChar.cvy = 0;
-							myChar.delayFall = 0;
-
-							bool hasGround = TileMap.tileTypeAt(dashTargetX, dashTargetY + 12, 2);
-							myChar.statusMe = hasGround ? 1 : 10;
-
-							Service.isForceSendMove = true;
-							Service.gI().charMove();
-
-							if (dashTargetWp != null)
-							{
-								Waypoint wp = dashTargetWp;
-								dashTargetWp = null;
-								doRequestChangeMap(wp, dashTargetX, dashTargetY);
-							}
-							else
-							{
-								Char.isLockKey = false;
-							}
-						}
-						else
-						{
-							// Di chuyển từng bước trên không an toàn (tránh rớt hố, rớt vực Maima, va chạm địa hình)
-							int curX = dashStartX + (dashTargetX - dashStartX) * dashStepIndex / dashTotalSteps;
-							int curY = dashStartY + (dashTargetY - dashStartY) * dashStepIndex / dashTotalSteps;
-
-							if (TileMap.tileTypeAt(curX, curY + 6, 2))
-							{
-								curY -= 6;
-							}
-
-							myChar.cx = curX;
-							myChar.cy = curY;
-							myChar.cvx = 0;
-							myChar.cvy = 0;
-							myChar.delayFall = 0;
-							myChar.statusMe = 10; // Giữ bay trên không để server chấp nhận packet di chuyển an toàn
-
-							Service.isForceSendMove = true;
-							Service.gI().charMove();
-						}
-					}
-				}
-			}
 		}
 		catch (Exception)
 		{
@@ -933,13 +851,13 @@ public class ModManager : IActionListener
 
 		checkAutoActivateTDLT();
 
-		startSafeDash(targetX, targetY, null);
+		teleportInstant(targetX, targetY, null);
 	}
 
 	public static void handleQuickMapChange(int dir)
 	{
 		long now = mSystem.currentTimeMillis();
-		if (isDashing || now - lastChangeMapRequestTime < 500L) return;
+		if (now - lastChangeMapRequestTime < 400L) return;
 
 		Char myChar = Char.myCharz();
 		if (myChar == null) return;
@@ -1067,12 +985,11 @@ public class ModManager : IActionListener
 		Char myChar = Char.myCharz();
 		if (myChar == null) return;
 
-		// 1. Xác định tọa độ X chuẩn: nằm chính giữa vùng cổng (100% hợp lệ bên trong [minX, maxX])
+		// 1. Xác định tọa độ X, Y chuẩn: chính giữa tâm vùng cổng (100% hợp lệ bên trong waypoint trên cả Client & Server)
 		int targetX = (wp.minX + wp.maxX) / 2;
-		myChar.cdir = (targetX > TileMap.pxw / 2) ? 1 : -1;
-
-		// 2. Xác định tọa độ Y chuẩn:
 		int targetY = (wp.minY + wp.maxY) / 2;
+
+		// Ưu tiên nếu có gạch đất ngay tại chân cổng thì đặt chân sát mặt gạch
 		for (int y = wp.maxY; y >= wp.minY; y -= 4)
 		{
 			if (TileMap.tileTypeAt(targetX, y, 2))
@@ -1082,6 +999,7 @@ public class ModManager : IActionListener
 			}
 		}
 
+		myChar.cdir = (targetX > TileMap.pxw / 2) ? 1 : -1;
 		myChar.currentMovePoint = null;
 		GameCanvas.clearKeyHold();
 		GameCanvas.clearKeyPressed();
@@ -1099,16 +1017,14 @@ public class ModManager : IActionListener
 			}
 		}
 
-		checkAutoActivateTDLT();
-
 		string wpName = (wp.popup != null && wp.popup.says != null && wp.popup.says.Length > 0) ? wp.popup.says[0] : "Cổng";
 		notify("Dịch map -> " + wpName);
 
-		// Di chuyển đến cổng bằng thuật toán Lướt Cực Tốc An Toàn (tương thích cả khi CÓ hoặc KHÔNG có TDLT)
-		startSafeDash(targetX, targetY, wp);
+		// Dịch chuyển tức thời mượt như có TDLT
+		teleportInstant(targetX, targetY, wp);
 	}
 
-	public static void startSafeDash(int targetX, int targetY, Waypoint wp = null)
+	public static void teleportInstant(int targetX, int targetY, Waypoint wp = null)
 	{
 		Char myChar = Char.myCharz();
 		if (myChar == null) return;
@@ -1117,20 +1033,16 @@ public class ModManager : IActionListener
 		int startY = myChar.cy;
 		int dist = Res.distance(startX, startY, targetX, targetY);
 
-		// Nếu khoảng cách rất gần (<= 70px) hoặc CÓ TỰ ĐỘNG LUYỆN TẬP:
-		// Dịch chuyển tức thời 1 frame (siêu mượt)
-		if (dist <= 70 || GameScr.canAutoPlay || isAutoTrainBuffActive())
-		{
-			isDashing = false;
-			dashTargetWp = null;
+		bool hasGround = TileMap.tileTypeAt(targetX, targetY + 12, 2);
 
+		// Nếu có TDLT hoặc khoảng cách ngắn (<= 75px): Dịch chuyển tức thời 1 frame
+		if (dist <= 75 || GameScr.canAutoPlay || isAutoTrainBuffActive())
+		{
 			myChar.cx = targetX;
 			myChar.cy = targetY;
 			myChar.cvy = 0;
 			myChar.cvx = 0;
 			myChar.delayFall = 0;
-
-			bool hasGround = TileMap.tileTypeAt(targetX, targetY + 12, 2);
 			myChar.statusMe = hasGround ? 1 : 10;
 
 			Service.isForceSendMove = true;
@@ -1143,26 +1055,41 @@ public class ModManager : IActionListener
 			return;
 		}
 
-		// KHÔNG CÓ TDLT: LƯỚT CỰC TỐC AN TOÀN (Safe Sonic Dash)
-		// Bước lướt 70px/bước (Server kiểm tra ngưỡng 100px nên 70px an toàn 100%)
-		// Nhịp 55ms gửi 1 gói move -> Server nhận ~18 gói/giây -> KHÔNG BAO GIỜ bị lỗi mất sóng [4]
-		int stepSize = 70;
-		int totalSteps = (dist + stepSize - 1) / stepSize;
-		if (totalSteps < 1) totalSteps = 1;
+		// KHÔNG CÓ TDLT: DỊCH CHUYỂN TỨC THỜI (Instant Teleport with Server Sub-step Sync)
+		// Trên màn hình: Nhân vật nhảy NGAY LẬP TỨC tới đích trong 1 khung hình (không lướt, không chạy)
+		// Lên Server: Đồng bộ các bước vi mô (mỗi bước <= 75px) để Server chấp nhận toàn bộ hành trình
+		int stepSize = 75;
+		int steps = (dist + stepSize - 1) / stepSize;
+		if (steps < 1) steps = 1;
 
-		isDashing = true;
-		dashStartX = startX;
-		dashStartY = startY;
-		dashTargetX = targetX;
-		dashTargetY = targetY;
-		dashTargetWp = wp;
-		dashStepIndex = 0;
-		dashTotalSteps = totalSteps;
-		lastDashStepTime = mSystem.currentTimeMillis();
-		dashStartTime = lastDashStepTime;
+		for (int i = 1; i <= steps; i++)
+		{
+			int sX = startX + (targetX - startX) * i / steps;
+			int sY = startY + (targetY - startY) * i / steps;
 
-		// Khóa phím tạm thời để người chơi không nhấn phím đè lên hướng bay, nhưng CHƯA set ischangingMap
-		Char.isLockKey = true;
+			myChar.cx = sX;
+			myChar.cy = sY;
+			myChar.cvy = 0;
+			myChar.cvx = 0;
+			myChar.delayFall = 0;
+			myChar.statusMe = (i == steps && hasGround) ? 1 : 10;
+
+			Service.isForceSendMove = true;
+			Service.gI().charMove();
+		}
+
+		// Đảm bảo tọa độ nhân vật ở máy khách là đích đến
+		myChar.cx = targetX;
+		myChar.cy = targetY;
+		myChar.cvy = 0;
+		myChar.cvx = 0;
+		myChar.delayFall = 0;
+		myChar.statusMe = hasGround ? 1 : 10;
+
+		if (wp != null)
+		{
+			doRequestChangeMap(wp, targetX, targetY);
+		}
 	}
 
 	private static void doRequestChangeMap(Waypoint wp, int targetX, int targetY)
@@ -1195,18 +1122,6 @@ public class ModManager : IActionListener
 		else
 		{
 			Service.gI().requestChangeMap();
-		}
-
-		// Nếu cổng có command đi kèm (tàu bay, capsule, thuyền): kích hoạt command
-		if (wp.popup != null && wp.popup.command != null)
-		{
-			try
-			{
-				wp.popup.command.performAction();
-			}
-			catch (Exception)
-			{
-			}
 		}
 	}
 
@@ -1639,11 +1554,11 @@ public class ModManager : IActionListener
 				int distToMob = Res.distance(myChar.cx, myChar.cy, desiredX, desiredY);
 				if (distToMob > 20)
 				{
-					if (distToMob > 80 && !GameScr.canAutoPlay && !isAutoTrainBuffActive() && !isDashing)
+					if (distToMob > 80 && !GameScr.canAutoPlay && !isAutoTrainBuffActive())
 					{
-						startSafeDash(desiredX, desiredY, null);
+						teleportInstant(desiredX, desiredY, null);
 					}
-					else if (!isDashing)
+					else
 					{
 						myChar.cx = desiredX;
 						myChar.cy = desiredY;
