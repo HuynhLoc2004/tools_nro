@@ -976,10 +976,6 @@ public class Service
 		else
 		{
 			isForceSendMove = false;
-			if (now - lastCharMoveSendTime < 15L)
-			{
-				return;
-			}
 			lastCharMoveSendTime = now;
 		}
 
