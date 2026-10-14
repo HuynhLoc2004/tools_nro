@@ -254,17 +254,11 @@ public class ModManager : IActionListener
 			Char myChar = Char.myCharz();
 			if (myChar != null)
 			{
-				myChar.cxSend = x;
-				myChar.cySend = y;
-				myChar.cdirSend = myChar.cdir;
+				myChar.cx = x;
+				myChar.cy = y;
 			}
-			Message message = new Message((sbyte)(-7));
-			sbyte inAir = (sbyte)(TileMap.tileTypeAt(x / TileMap.size, y / TileMap.size) == 0 ? 1 : 0);
-			message.writer().writeByte(inAir);
-			message.writer().writeShort(x);
-			message.writer().writeShort(y);
-			Session_ME.gI().sendMessage(message);
-			message.cleanup();
+			Service.isForceSendMove = true;
+			Service.gI().charMove();
 		}
 		catch (Exception)
 		{
@@ -290,7 +284,7 @@ public class ModManager : IActionListener
 			}
 
 			int dist = Res.distance(pathCurrentX, pathCurrentY, pathTargetX, pathTargetY);
-			int stepSize = 95;
+			int stepSize = 120;
 
 			if (dist <= stepSize)
 			{
@@ -300,16 +294,20 @@ public class ModManager : IActionListener
 				myChar.cy = pathTargetY;
 				myChar.cvy = 0;
 				myChar.cvx = 0;
+				myChar.delayFall = 50;
 				bool hasGround = TileMap.tileTypeAt(pathTargetX, pathTargetY + 12, 2);
 				myChar.statusMe = hasGround ? 1 : 10;
-				sendDirectMove(pathTargetX, pathTargetY);
 				isPathTeleporting = false;
+
+				// Gửi vị trí chuẩn xác khi đến nơi
+				Service.isForceSendMove = true;
+				Service.gI().charMove();
 
 				if (pathPendingWaypoint != null)
 				{
 					Waypoint wp = pathPendingWaypoint;
 					pathPendingWaypoint = null;
-					doRequestChangeMap(wp, pathTargetX, pathTargetY);
+					triggerWaypointChangeMap(wp);
 				}
 			}
 			else
@@ -322,7 +320,14 @@ public class ModManager : IActionListener
 				myChar.statusMe = 2; // Hiển thị lướt / chạy cực mượt
 				myChar.cvy = 0;
 				myChar.cvx = 0;
-				sendDirectMove(pathCurrentX, pathCurrentY);
+
+				// Chỉ gửi gói tin move tối đa 70ms/lần trên đường lướt để tránh nghẽn socket
+				if (now - lastMoveSendTime >= 70L)
+				{
+					lastMoveSendTime = now;
+					Service.isForceSendMove = true;
+					Service.gI().charMove();
+				}
 			}
 		}
 		catch (Exception)
@@ -835,6 +840,64 @@ public class ModManager : IActionListener
 		checkHotkeysEveryFrame();
 	}
 
+	public static int findGroundYAtWaypoint(Waypoint wp, int targetX)
+	{
+		if (wp == null) return 300;
+
+		// 1. Quét tìm đất trong phạm vi Y của waypoint tại các vị trí X gần cổng
+		int[] scanXs;
+		if (targetX < 120)
+		{
+			scanXs = new int[] { targetX, 48, 60, 72, 96, 120 };
+		}
+		else if (targetX > TileMap.pxw - 120)
+		{
+			scanXs = new int[] { targetX, TileMap.pxw - 48, TileMap.pxw - 60, TileMap.pxw - 72, TileMap.pxw - 96, TileMap.pxw - 120 };
+		}
+		else
+		{
+			scanXs = new int[] { targetX, targetX - 24, targetX + 24 };
+		}
+
+		for (int s = 0; s < scanXs.Length; s++)
+		{
+			int sx = scanXs[s];
+			if (sx < 0 || sx > TileMap.pxw) continue;
+			for (int y = wp.maxY + 24; y >= wp.minY - 24; y -= 12)
+			{
+				if (TileMap.tileTypeAt(sx, y, 2))
+				{
+					int gy = (y / 24) * 24;
+					if (gy >= wp.minY - 24 && gy <= wp.maxY + 24)
+					{
+						return gy;
+					}
+				}
+			}
+		}
+
+		// 2. Quét từ dưới đáy map lên tại cột gần cổng
+		int checkX = (targetX < TileMap.pxw / 2) ? 72 : (TileMap.pxw - 72);
+		for (int y = TileMap.pxh - 24; y >= 24; y -= 12)
+		{
+			if (TileMap.tileTypeAt(checkX, y, 2))
+			{
+				int gy = (y / 24) * 24;
+				if (gy >= wp.minY && gy <= wp.maxY)
+				{
+					return gy;
+				}
+			}
+		}
+
+		// 3. Nếu là cổng trên không hoặc map đặc biệt
+		if (wp.maxY > wp.minY + 24)
+		{
+			return (wp.minY + wp.maxY) / 2;
+		}
+		return wp.maxY;
+	}
+
 	public static int findGroundY(int x)
 	{
 		Char myChar = Char.myCharz();
@@ -986,12 +1049,11 @@ public class ModManager : IActionListener
 		Char myChar = Char.myCharz();
 		if (myChar == null) return;
 
-		int targetX = (dir == 0) ? 24 : ((dir == 2) ? (TileMap.pxw - 24) : (TileMap.pxw / 2));
+		int targetX = (dir == 0) ? 36 : ((dir == 2) ? (TileMap.pxw - 36) : (TileMap.pxw / 2));
 
-		// Nếu là mép trái hoặc phải, tìm vị trí có đất gần nhất trên đảo (tránh rơi xuống biển ở map đảo như Đảo Kame)
 		if (dir == 0)
 		{
-			for (int x = 24; x < TileMap.pxw / 2; x += 24)
+			for (int x = 36; x < TileMap.pxw / 2; x += 24)
 			{
 				int y = findGroundY(x);
 				if (TileMap.tileTypeAt(x, y, 2))
@@ -1003,7 +1065,7 @@ public class ModManager : IActionListener
 		}
 		else if (dir == 2)
 		{
-			for (int x = TileMap.pxw - 24; x > TileMap.pxw / 2; x -= 24)
+			for (int x = TileMap.pxw - 36; x > TileMap.pxw / 2; x -= 24)
 			{
 				int y = findGroundY(x);
 				if (TileMap.tileTypeAt(x, y, 2))
@@ -1037,7 +1099,8 @@ public class ModManager : IActionListener
 			myChar.delayFall = 50;
 			isPathTeleporting = false;
 			pathPendingWaypoint = null;
-			sendDirectMove(targetX, targetY);
+			Service.isForceSendMove = true;
+			Service.gI().charMove();
 		}
 		else
 		{
@@ -1087,7 +1150,7 @@ public class ModManager : IActionListener
 
 		if (Char.ischangingMap)
 		{
-			if (now - lastChangeMapRequestTime > 500L)
+			if (now - lastChangeMapRequestTime > 1200L)
 			{
 				Char.ischangingMap = false;
 				Char.isLockKey = false;
@@ -1212,37 +1275,13 @@ public class ModManager : IActionListener
 
 		// 1. Xác định tọa độ X chuẩn (nằm hoàn toàn bên trong vùng cổng)
 		int targetX = (wp.minX + wp.maxX) / 2;
-		if (wp.minX <= 60)
-		{
-			targetX = wp.minX + 15;
-			myChar.cdir = -1;
-		}
-		else if (wp.maxX >= TileMap.pxw - 60)
-		{
-			targetX = wp.maxX - 15;
-			myChar.cdir = 1;
-		}
-		else
-		{
-			targetX = (wp.minX + wp.maxX) / 2;
-			myChar.cdir = (targetX > TileMap.pxw / 2) ? 1 : -1;
-		}
+		if (targetX < wp.minX + 4) targetX = wp.minX + 4;
+		if (targetX > wp.maxX - 4) targetX = wp.maxX - 4;
 
-		// 2. Xác định tọa độ Y chuẩn
-		int targetY = -1;
-		for (int y = wp.maxY + 12; y >= wp.minY - 12; y -= 12)
-		{
-			if (TileMap.tileTypeAt(targetX, y, 2))
-			{
-				targetY = (y / 24) * 24;
-				break;
-			}
-		}
-		if (targetY == -1 || targetY < wp.minY || targetY > wp.maxY)
-		{
-			targetY = (wp.minY + wp.maxY) / 2;
-		}
+		// 2. Xác định tọa độ Y chuẩn (quét sát mặt đất chuẩn tại cổng)
+		int targetY = findGroundYAtWaypoint(wp, targetX);
 
+		myChar.cdir = (targetX > TileMap.pxw / 2) ? 1 : -1;
 		myChar.currentMovePoint = null;
 		GameCanvas.clearKeyHold();
 		GameCanvas.clearKeyPressed();
@@ -1261,7 +1300,6 @@ public class ModManager : IActionListener
 		}
 
 		string wpName = (wp.popup != null && wp.popup.says != null && wp.popup.says.Length > 0) ? wp.popup.says[0] : "Cổng";
-		int dist = Res.distance(myChar.cx, myChar.cy, targetX, targetY);
 
 		int startX = myChar.cx;
 		int startY = myChar.cy;
@@ -1273,19 +1311,19 @@ public class ModManager : IActionListener
 			// Có TDLT: Dịch chuyển tức thời 0ms
 			myChar.cx = targetX;
 			myChar.cy = targetY;
-			bool hasGround = TileMap.tileTypeAt(targetX, targetY + 12, 2);
-			myChar.statusMe = hasGround ? 1 : 10;
+			myChar.statusMe = 1;
 			myChar.cvy = 0;
 			myChar.cvx = 0;
 			myChar.delayFall = 50;
 			isPathTeleporting = false;
 			pathPendingWaypoint = null;
-			sendDirectMove(targetX, targetY);
-			doRequestChangeMap(wp, targetX, targetY);
+			Service.isForceSendMove = true;
+			Service.gI().charMove();
+			triggerWaypointChangeMap(wp);
 		}
 		else
 		{
-			// Không có TDLT: Lướt siêu tốc 65px/12ms mượt mà đến cổng, không spam 0ms, không ngắt kết nối
+			// Không có TDLT: Lướt siêu tốc đến cổng mượt mà, không spam 0ms, không ngắt kết nối
 			isPathTeleporting = true;
 			pathCurrentX = startX;
 			pathCurrentY = startY;
@@ -1298,30 +1336,16 @@ public class ModManager : IActionListener
 		notify("Dịch map -> " + wpName);
 	}
 
-	private static void doRequestChangeMap(Waypoint wp, int targetX, int targetY)
+	public static void triggerWaypointChangeMap(Waypoint wp)
 	{
 		if (wp == null) return;
 		currentTeleportWaypoint = wp;
-		teleportTargetX = targetX;
-		teleportTargetY = targetY;
 		lastChangeMapFromMapId = TileMap.mapID;
 		lastChangeMapRequestTime = mSystem.currentTimeMillis();
 		lastTeleportRequestMapTime = lastChangeMapRequestTime;
 		teleportRequestCount = 0;
 
-		Char.isLockKey = true;
-		Char.ischangingMap = true;
-		GameCanvas.clearKeyHold();
-		GameCanvas.clearKeyPressed();
-		InfoDlg.showWait();
-
-		sendChangeMapPacket(wp);
-	}
-
-	public static void sendChangeMapPacket(Waypoint wp)
-	{
-		if (wp == null) return;
-
+		// 1. Gửi gói tin chuyển map phù hợp
 		if (wp.isOffline || TileMap.isTrainingMap())
 		{
 			Service.gI().getMapOffline();
@@ -1330,6 +1354,13 @@ public class ModManager : IActionListener
 		{
 			Service.gI().requestChangeMap();
 		}
+
+		// 2. Khóa phím và hiển thị hộp thoại chờ
+		Char.isLockKey = true;
+		Char.ischangingMap = true;
+		GameCanvas.clearKeyHold();
+		GameCanvas.clearKeyPressed();
+		InfoDlg.showWait();
 	}
 
 	// Kiểm tra skill có phải là skill hỗ trợ / buff / cứu người / nạp KI không (Không dùng để pem quái)
