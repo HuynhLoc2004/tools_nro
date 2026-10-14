@@ -238,16 +238,49 @@ public class ModManager : IActionListener
 	public static long lastTeleportRequestMapTime = 0L;
 	public static int teleportRequestCount = 0;
 
-	// Hệ thống lướt siêu tốc vi mô khi không có TDLT (Server không bao giờ snapback)
-	public static bool isFastDashing = false;
-	public static int dashStartX = 0;
-	public static int dashStartY = 0;
-	public static int dashTargetX = 0;
-	public static int dashTargetY = 0;
-	public static int dashCurrentStep = 0;
-	public static int dashTotalSteps = 0;
-	public static long lastDashStepTime = 0L;
-	public static Waypoint dashWaypoint = null;
+	public static void sendDirectMove(int x, int y)
+	{
+		try
+		{
+			Char myChar = Char.myCharz();
+			if (myChar != null)
+			{
+				myChar.cxSend = x;
+				myChar.cySend = y;
+				myChar.cdirSend = myChar.cdir;
+			}
+			Message message = new Message((sbyte)(-7));
+			sbyte inAir = (sbyte)(TileMap.tileTypeAt(x / TileMap.size, y / TileMap.size) == 0 ? 1 : 0);
+			message.writer().writeByte(inAir);
+			message.writer().writeShort(x);
+			message.writer().writeShort(y);
+			Session_ME.gI().sendMessage(message);
+			message.cleanup();
+		}
+		catch (Exception)
+		{
+		}
+	}
+
+	public static void sendTeleportPath(int fromX, int fromY, int toX, int toY)
+	{
+		try
+		{
+			int dist = Res.distance(fromX, fromY, toX, toY);
+			int stepSize = 65;
+			int steps = (dist + stepSize - 1) / stepSize;
+			if (steps < 1) steps = 1;
+			for (int i = 1; i <= steps; i++)
+			{
+				int sx = fromX + (toX - fromX) * i / steps;
+				int sy = fromY + (toY - fromY) * i / steps;
+				sendDirectMove(sx, sy);
+			}
+		}
+		catch (Exception)
+		{
+		}
+	}
 
 	public static bool isMapChangeCooldown()
 	{
@@ -261,10 +294,6 @@ public class ModManager : IActionListener
 		lastChangeMapRequestTime = 0L;
 		lastChangeMapFromMapId = TileMap.mapID;
 		currentTeleportWaypoint = null;
-		pendingWaypoint = null;
-		pendingChangeMapSendTime = 0L;
-		isFastDashing = false;
-		dashWaypoint = null;
 		teleportRequestCount = 0;
 		Char.ischangingMap = false;
 		Char.isLockKey = false;
@@ -295,7 +324,7 @@ public class ModManager : IActionListener
 							}
 							if (myChar.cx < 24) myChar.cx = 24;
 							if (myChar.cx > TileMap.pxw - 24) myChar.cx = TileMap.pxw - 24;
-							Service.gI().charMove();
+							sendDirectMove(myChar.cx, myChar.cy);
 							break;
 						}
 					}
@@ -658,68 +687,15 @@ public class ModManager : IActionListener
 				updateAutoDrop(now);
 			}
 
-			// Xử lý Lướt Siêu Tốc Vi Mô Đồng Bộ Tốc Độ (Dành cho khi không có TDLT)
-			if (isFastDashing)
+			// Tự động đóng dialog "Xin chờ" nếu map đã đổi hoặc không còn trạng thái chuyển map
+			if (!Char.ischangingMap && !Char.isLoadingMap && InfoDlg.isShow)
 			{
-				long stepInterval = (long)Mathf.Max(4f, 20f / currentSpeed);
-				if (now - lastDashStepTime >= stepInterval)
+				if (TileMap.mapID != lastChangeMapFromMapId && lastChangeMapFromMapId != -1)
 				{
-					lastDashStepTime = now;
-					dashCurrentStep++;
-					Char myChar = Char.myCharz();
-					if (myChar != null)
-					{
-						if (dashCurrentStep >= dashTotalSteps)
-						{
-							isFastDashing = false;
-							myChar.cx = dashTargetX;
-							myChar.cy = dashTargetY;
-							bool hasGround = TileMap.tileTypeAt(dashTargetX, dashTargetY + 12, 2);
-							myChar.statusMe = hasGround ? 1 : 10;
-							myChar.cvy = 0;
-							myChar.cvx = 0;
-							myChar.delayFall = 0;
-							Service.isForceSendMove = true;
-							Service.gI().charMove();
-
-							if (dashWaypoint != null)
-							{
-								teleportTargetX = dashTargetX;
-								teleportTargetY = dashTargetY;
-								pendingWaypoint = dashWaypoint;
-								long changeMapDelay = (long)Mathf.Max(15f, 50f / currentSpeed);
-								pendingChangeMapSendTime = now + changeMapDelay;
-								dashWaypoint = null;
-							}
-						}
-						else
-						{
-							int currX = dashStartX + (dashTargetX - dashStartX) * dashCurrentStep / dashTotalSteps;
-							int currY = dashStartY + (dashTargetY - dashStartY) * dashCurrentStep / dashTotalSteps;
-							myChar.cx = currX;
-							myChar.cy = currY;
-							myChar.statusMe = 10;
-							myChar.cvy = 0;
-							myChar.cvx = 0;
-
-							// Chỉ gửi packet trung gian tối đa 1 lần ở giữa đường (nếu từ 4 bước trở lên)
-							// Tránh spam packet charMove làm đứt kết nối [4] khi chơi tốc độ cao x10
-							if (dashTotalSteps >= 4 && dashCurrentStep == dashTotalSteps / 2)
-							{
-								Service.isForceSendMove = true;
-								Service.gI().charMove();
-							}
-						}
-					}
+					InfoDlg.hide();
+					GameCanvas.endDlg();
+					GameCanvas.currentDialog = null;
 				}
-			}
-
-			// Xử lý gửi packet chuyển map sau độ trễ thích ứng tốc độ để Server nhận toạ độ charMove trước
-			if (pendingWaypoint != null && now >= pendingChangeMapSendTime)
-			{
-				Waypoint wp = pendingWaypoint;
-				pendingWaypoint = null;
-				doRequestChangeMap(wp, teleportTargetX, teleportTargetY);
 			}
 
 			// 8. Quản lý trạng thái chuyển map (chống kẹt / an toàn)
@@ -990,37 +966,23 @@ public class ModManager : IActionListener
 
 		GameScr.canAutoPlay = true;
 
-		int dist = Res.distance(myChar.cx, myChar.cy, targetX, targetY);
-		if (isRealTDLTActive() || dist <= 75)
-		{
-			isFastDashing = false;
-			myChar.cx = targetX;
-			myChar.cy = targetY;
-			myChar.statusMe = 1;
-			myChar.cvy = 0;
-			myChar.cvx = 0;
-			myChar.delayFall = 0;
+		int startX = myChar.cx;
+		int startY = myChar.cy;
 
-			Service.isForceSendMove = true;
-			Service.gI().charMove();
+		myChar.cx = targetX;
+		myChar.cy = targetY;
+		myChar.statusMe = 1;
+		myChar.cvy = 0;
+		myChar.cvx = 0;
+		myChar.delayFall = 0;
+
+		if (isRealTDLTActive())
+		{
+			sendDirectMove(targetX, targetY);
 		}
 		else
 		{
-			isFastDashing = true;
-			dashStartX = myChar.cx;
-			dashStartY = myChar.cy;
-			dashTargetX = targetX;
-			dashTargetY = targetY;
-			int stepSize = Mathf.Clamp(Mathf.RoundToInt(60f + (currentSpeed - 1f) * 12f), 60, 180);
-			dashTotalSteps = (dist + stepSize - 1) / stepSize;
-			if (dashTotalSteps < 2) dashTotalSteps = 2;
-			if (dashTotalSteps > 6) dashTotalSteps = 6;
-			dashCurrentStep = 0;
-			lastDashStepTime = 0L;
-			dashWaypoint = null;
-
-			myChar.currentMovePoint = null;
-			myChar.cdir = (targetX > myChar.cx) ? 1 : -1;
+			sendTeleportPath(startX, startY, targetX, targetY);
 		}
 	}
 
@@ -1041,9 +1003,9 @@ public class ModManager : IActionListener
 			return;
 		}
 
-		// 3. Cooldown giữa các lần yêu cầu hoặc khi đang chờ gửi packet
+		// 3. Cooldown giữa các lần yêu cầu
 		long requestCooldown = (long)Mathf.Max(180f, 700f / Mathf.Sqrt(currentSpeed));
-		if (now - lastChangeMapRequestTime < requestCooldown || pendingWaypoint != null)
+		if (now - lastChangeMapRequestTime < requestCooldown)
 		{
 			return;
 		}
@@ -1233,53 +1195,35 @@ public class ModManager : IActionListener
 		string wpName = (wp.popup != null && wp.popup.says != null && wp.popup.says.Length > 0) ? wp.popup.says[0] : "Cổng";
 		int dist = Res.distance(myChar.cx, myChar.cy, targetX, targetY);
 
-		// TRƯỜNG HỢP 1: CÓ TDLT HOẶC KHOẢNG CÁCH GẦN (<= 75px)
-		// Dịch tức thời 1 frame (0ms)
-		if (isRealTDLTActive() || dist <= 75)
+		int startX = myChar.cx;
+		int startY = myChar.cy;
+
+		// 1. Dịch chuyển tức thời 0ms trên màn hình client (mượt tuyệt đối như có TDLT)
+		myChar.cx = targetX;
+		myChar.cy = targetY;
+
+		bool hasGround = TileMap.tileTypeAt(targetX, targetY + 12, 2);
+		myChar.statusMe = hasGround ? 1 : 10;
+		myChar.cvy = 0;
+		myChar.cvx = 0;
+		myChar.delayFall = 0;
+
+		// 2. Gửi đồng bộ vị trí lên server
+		if (isRealTDLTActive())
 		{
-			isFastDashing = false;
-			myChar.cx = targetX;
-			myChar.cy = targetY;
-
-			bool hasGround = TileMap.tileTypeAt(targetX, targetY + 12, 2);
-			myChar.statusMe = hasGround ? 1 : 10;
-			myChar.cvy = 0;
-			myChar.cvx = 0;
-			myChar.delayFall = 0;
-
-			Service.isForceSendMove = true;
-			Service.gI().charMove();
-
-			teleportTargetX = targetX;
-			teleportTargetY = targetY;
-			pendingWaypoint = wp;
-			long changeMapDelay = (long)Mathf.Max(15f, 50f / currentSpeed);
-			pendingChangeMapSendTime = mSystem.currentTimeMillis() + changeMapDelay;
-
-			notify("Dịch map -> " + wpName);
+			sendDirectMove(targetX, targetY);
 		}
 		else
 		{
-			// TRƯỜNG HỢP 2: KHÔNG CÓ TDLT TRÊN SERVER & Ở XA CỔNG (> 75px)
-			// LƯỚT SIÊU TỐC ĐỒNG BỘ THEO TỐC ĐỘ HIỆN TẠI (CHỊU TỐC ĐỘ TỐI ĐA MAX 10 KHÔNG NGẮT KẾT NỐI):
-			isFastDashing = true;
-			dashStartX = myChar.cx;
-			dashStartY = myChar.cy;
-			dashTargetX = targetX;
-			dashTargetY = targetY;
-			int stepSize = Mathf.Clamp(Mathf.RoundToInt(60f + (currentSpeed - 1f) * 12f), 60, 180);
-			dashTotalSteps = (dist + stepSize - 1) / stepSize;
-			if (dashTotalSteps < 2) dashTotalSteps = 2;
-			if (dashTotalSteps > 6) dashTotalSteps = 6;
-			dashCurrentStep = 0;
-			lastDashStepTime = 0L;
-			dashWaypoint = wp;
-
-			myChar.currentMovePoint = null;
-			myChar.cdir = (targetX > myChar.cx) ? 1 : -1;
-
-			notify("Dịch map -> " + wpName);
+			// Không có TDLT: trick gửi chuỗi toạ độ vi mô (mỗi bước <= 65px)
+			// Server chấp nhận 100% tất cả các bước, không bao giờ bị giật ngược lại (Reset Point)!
+			sendTeleportPath(startX, startY, targetX, targetY);
 		}
+
+		// 3. Gởi trực tiếp yêu cầu chuyển map lên Server
+		doRequestChangeMap(wp, targetX, targetY);
+
+		notify("Dịch map -> " + wpName);
 	}
 
 	private static void doRequestChangeMap(Waypoint wp, int targetX, int targetY)
