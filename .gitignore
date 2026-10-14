@@ -1,0 +1,9 @@
+# Binaries and game data
+DragonBoy250_pc/
+bin/
+obj/
+src/bin/
+src/obj/
+*.user
+*.suo
+.vs/
