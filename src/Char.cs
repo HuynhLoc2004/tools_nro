@@ -1668,11 +1668,6 @@ public class Char : IMapObject
 		{
 			return null;
 		}
-		Task task = myChar.taskMaint;
-		if (task != null && task.taskId == 0 && task.index < 6)
-		{
-			return null;
-		}
 		int num = TileMap.vGo.size();
 		for (sbyte b = 0; b < num; b++)
 		{
@@ -1688,11 +1683,6 @@ public class Char : IMapObject
 	public Waypoint isInEnterOnlinePoint()
 	{
 		if (ModManager.isMapChangeCooldown())
-		{
-			return null;
-		}
-		Task task = myChar.taskMaint;
-		if (task != null && task.taskId == 0 && task.index < 6)
 		{
 			return null;
 		}

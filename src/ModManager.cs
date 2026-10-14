@@ -1231,21 +1231,17 @@ public class ModManager : IActionListener
 		Service.isForceSendMove = true;
 		Service.gI().charMove();
 
-		// 2. Gửi lệnh đổi map trực tiếp đến Server (KHÔNG qua popup.command tránh bị gán currentMovePoint gây chạy/rơi vực)
+		// 2. Gửi lệnh đổi map: Gửi requestChangeMap (-23) cho tất cả các map, và gửi thêm getMapOffline (-33) nếu có cờ offline
+		Service.gI().requestChangeMap();
 		if (wp.isOffline || TileMap.isTrainingMap())
 		{
 			Service.gI().getMapOffline();
 		}
-		else
-		{
-			Service.gI().requestChangeMap();
-		}
 
-		Char.isLockKey = true;
-		Char.ischangingMap = true;
-		GameCanvas.clearKeyHold();
-		GameCanvas.clearKeyPressed();
-		InfoDlg.showWait();
+		// TUYỆT ĐỐI KHÔNG KHÓA PHÍM ĐỂ NGƯỜI CHƠI KHÔNG BAO GIỜ BỊ ĐÓNG BĂNG/KẸT
+		Char.isLockKey = false;
+		InfoDlg.isLock = false;
+		Char.ischangingMap = false;
 	}
 
 	// Kiểm tra skill có phải là skill hỗ trợ / buff / cứu người / nạp KI không (Không dùng để pem quái)
