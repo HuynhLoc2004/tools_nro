@@ -638,7 +638,7 @@ public class ModManager : IActionListener
 				updateAutoDrop(now);
 			}
 
-			// 8. Quản lý trạng thái chuyển map (chống kẹt / giữ vị trí ở cổng)
+			// 8. Quản lý trạng thái chuyển map (chống kẹt / an toàn)
 			if (Char.ischangingMap)
 			{
 				if (TileMap.mapID != lastChangeMapFromMapId)
@@ -648,33 +648,8 @@ public class ModManager : IActionListener
 				}
 				else
 				{
-					// Giữ nguyên vị trí nhân vật tại cổng để không bị rơi hoặc lệch khỏi cổng
-					Char myChar = Char.myCharz();
-					if (currentTeleportWaypoint != null && myChar != null)
-					{
-						myChar.cx = teleportTargetX;
-						myChar.cy = teleportTargetY;
-						myChar.cvx = 0;
-						myChar.cvy = 0;
-						if (!TileMap.tileTypeAt(teleportTargetX, teleportTargetY + 12, 2))
-						{
-							myChar.statusMe = 10;
-						}
-					}
-
-					// Thử gửi lại packet sau mỗi 400ms nếu server chưa load map (tối đa 3 lần)
-					if (now - lastTeleportRequestMapTime >= 400L && teleportRequestCount < 3)
-					{
-						lastTeleportRequestMapTime = now;
-						teleportRequestCount++;
-						if (currentTeleportWaypoint != null)
-						{
-							sendChangeMapPacket(currentTeleportWaypoint);
-						}
-					}
-
-					// Failsafe giải phóng khóa sau 1800ms nếu map không đổi
-					if (now - lastChangeMapRequestTime > 1800L)
+					// Failsafe giải phóng khóa sau 1500ms nếu map không đổi (tránh treo 'Xin chờ')
+					if (now - lastChangeMapRequestTime > 1500L)
 					{
 						Char.ischangingMap = false;
 						Char.isLockKey = false;
@@ -761,6 +736,82 @@ public class ModManager : IActionListener
 		return (myChar != null) ? myChar.cy : 300;
 	}
 
+	public static bool hasTrainingGearOrBuff()
+	{
+		try
+		{
+			if (GameScr.canAutoPlay)
+			{
+				return true;
+			}
+
+			Char myChar = Char.myCharz();
+			if (myChar == null) return false;
+
+			// 1. Kiểm tra Giáp Luyện Tập đang mặc trên người (arrItemBody)
+			if (myChar.arrItemBody != null)
+			{
+				for (int i = 0; i < myChar.arrItemBody.Length; i++)
+				{
+					Item it = myChar.arrItemBody[i];
+					if (it != null && it.template != null)
+					{
+						int id = it.template.id;
+						if (id == 529 || id == 530 || id == 531 || id == 521)
+						{
+							return true;
+						}
+						if (!string.IsNullOrEmpty(it.template.name))
+						{
+							string name = it.template.name.ToLower();
+							if (name.Contains("luyện tập") || name.Contains("luyen tap") || name.Contains("tập luyện") || name.Contains("tap luyen"))
+							{
+								return true;
+							}
+						}
+					}
+				}
+			}
+
+			// 2. Quét Char.vItemTime (Icon bánh răng vàng đặc trưng của TDLT)
+			if (Char.vItemTime != null)
+			{
+				for (int j = 0; j < Char.vItemTime.size(); j++)
+				{
+					ItemTime t = (ItemTime)Char.vItemTime.elementAt(j);
+					if (t != null)
+					{
+						if (t.idIcon == 4387 || t.idIcon == 4028 || t.idIcon == 521 || t.idIcon == 4330)
+						{
+							return true;
+						}
+					}
+				}
+			}
+
+			// 3. Quét GameScr.textTime nếu có
+			if (GameScr.textTime != null)
+			{
+				for (int j = 0; j < GameScr.textTime.size(); j++)
+				{
+					ItemTime t2 = (ItemTime)GameScr.textTime.elementAt(j);
+					if (t2 != null && !string.IsNullOrEmpty(t2.text))
+					{
+						string s = t2.text.ToLower();
+						if (s.Contains("luyện tập") || s.Contains("luyen tap") || s.Contains("tự động") || s.Contains("tu dong"))
+						{
+							return true;
+						}
+					}
+				}
+			}
+		}
+		catch (Exception)
+		{
+		}
+		return false;
+	}
+
 	public static int findAutoTrainBagIndex()
 	{
 		Char myChar = Char.myCharz();
@@ -770,14 +821,16 @@ public class ModManager : IActionListener
 			Item it = myChar.arrItemBag[i];
 			if (it != null && it.template != null)
 			{
-				if (it.template.id == 521 || it.template.iconID == 4387 || it.template.iconID == 4028 || it.template.iconID == 521 || it.template.iconID == 4330)
+				int id = it.template.id;
+				if (id == 529 || id == 530 || id == 531 || id == 521 ||
+					it.template.iconID == 4387 || it.template.iconID == 4028 || it.template.iconID == 521 || it.template.iconID == 4330)
 				{
 					return i;
 				}
 				if (!string.IsNullOrEmpty(it.template.name))
 				{
 					string name = it.template.name.ToLower();
-					if (name.Contains("luyện tập") || name.Contains("luyen tap") || name.Contains("máy luyện") || name.Contains("tập luyện") || name.Contains("tự động"))
+					if (name.Contains("luyện tập") || name.Contains("luyen tap") || name.Contains("máy luyện") || name.Contains("tập luyện") || name.Contains("tự động") || name.Contains("tu dong"))
 					{
 						return i;
 					}
@@ -791,17 +844,13 @@ public class ModManager : IActionListener
 	{
 		try
 		{
-			if (!GameScr.canAutoPlay && !isAutoTrainBuffActive())
+			if (!hasTrainingGearOrBuff())
 			{
 				int bagIdx = findAutoTrainBagIndex();
 				if (bagIdx >= 0)
 				{
 					Service.gI().useItem(0, 1, (sbyte)bagIdx, -1);
-					notify("Tự bật Luyện Tập để dịch map!");
-				}
-				else
-				{
-					notify("Bật Tự Động Luyện Tập để dịch map mượt!");
+					notify("Tự mặc Giáp / Bật Luyện Tập!");
 				}
 			}
 		}
@@ -851,13 +900,30 @@ public class ModManager : IActionListener
 
 		checkAutoActivateTDLT();
 
-		teleportInstant(targetX, targetY, null);
+		int dist = Res.distance(myChar.cx, myChar.cy, targetX, targetY);
+		if (hasTrainingGearOrBuff() || dist <= 80)
+		{
+			myChar.cx = targetX;
+			myChar.cy = targetY;
+			myChar.statusMe = 1;
+			myChar.cvy = 0;
+			myChar.cvx = 0;
+			myChar.delayFall = 0;
+
+			Service.isForceSendMove = true;
+			Service.gI().charMove();
+		}
+		else
+		{
+			myChar.currentMovePoint = new MovePoint(targetX, targetY);
+			myChar.cdir = (targetX > myChar.cx) ? 1 : -1;
+		}
 	}
 
 	public static void handleQuickMapChange(int dir)
 	{
 		long now = mSystem.currentTimeMillis();
-		if (now - lastChangeMapRequestTime < 400L) return;
+		if (now - lastChangeMapRequestTime < 500L) return;
 
 		Char myChar = Char.myCharz();
 		if (myChar == null) return;
@@ -985,21 +1051,39 @@ public class ModManager : IActionListener
 		Char myChar = Char.myCharz();
 		if (myChar == null) return;
 
-		// 1. Xác định tọa độ X, Y chuẩn: chính giữa tâm vùng cổng (100% hợp lệ bên trong waypoint trên cả Client & Server)
+		// 1. Xác định tọa độ X chuẩn (nằm hoàn toàn bên trong vùng cổng)
 		int targetX = (wp.minX + wp.maxX) / 2;
-		int targetY = (wp.minY + wp.maxY) / 2;
+		if (wp.minX <= 60)
+		{
+			targetX = wp.minX + 15;
+			myChar.cdir = -1;
+		}
+		else if (wp.maxX >= TileMap.pxw - 60)
+		{
+			targetX = wp.maxX - 15;
+			myChar.cdir = 1;
+		}
+		else
+		{
+			targetX = (wp.minX + wp.maxX) / 2;
+			myChar.cdir = (targetX > TileMap.pxw / 2) ? 1 : -1;
+		}
 
-		// Ưu tiên nếu có gạch đất ngay tại chân cổng thì đặt chân sát mặt gạch
-		for (int y = wp.maxY; y >= wp.minY; y -= 4)
+		// 2. Xác định tọa độ Y chuẩn
+		int targetY = -1;
+		for (int y = wp.maxY + 12; y >= wp.minY - 12; y -= 12)
 		{
 			if (TileMap.tileTypeAt(targetX, y, 2))
 			{
-				targetY = y;
+				targetY = (y / 24) * 24;
 				break;
 			}
 		}
+		if (targetY == -1 || targetY < wp.minY || targetY > wp.maxY)
+		{
+			targetY = (wp.minY + wp.maxY) / 2;
+		}
 
-		myChar.cdir = (targetX > TileMap.pxw / 2) ? 1 : -1;
 		myChar.currentMovePoint = null;
 		GameCanvas.clearKeyHold();
 		GameCanvas.clearKeyPressed();
@@ -1017,78 +1101,40 @@ public class ModManager : IActionListener
 			}
 		}
 
+		checkAutoActivateTDLT();
+
 		string wpName = (wp.popup != null && wp.popup.says != null && wp.popup.says.Length > 0) ? wp.popup.says[0] : "Cổng";
-		notify("Dịch map -> " + wpName);
+		int dist = Res.distance(myChar.cx, myChar.cy, targetX, targetY);
 
-		// Dịch chuyển tức thời mượt như có TDLT
-		teleportInstant(targetX, targetY, wp);
-	}
-
-	public static void teleportInstant(int targetX, int targetY, Waypoint wp = null)
-	{
-		Char myChar = Char.myCharz();
-		if (myChar == null) return;
-
-		int startX = myChar.cx;
-		int startY = myChar.cy;
-		int dist = Res.distance(startX, startY, targetX, targetY);
-
-		bool hasGround = TileMap.tileTypeAt(targetX, targetY + 12, 2);
-
-		// Nếu có TDLT hoặc khoảng cách ngắn (<= 75px): Dịch chuyển tức thời 1 frame
-		if (dist <= 75 || GameScr.canAutoPlay || isAutoTrainBuffActive())
+		// TRƯỜNG HỢP 1: CÓ GIÁP LUYỆN TẬP HOẶC TDLT HOẶC KHOẢNG CÁCH GẦN (<= 80px)
+		if (hasTrainingGearOrBuff() || dist <= 80)
 		{
 			myChar.cx = targetX;
 			myChar.cy = targetY;
-			myChar.cvy = 0;
-			myChar.cvx = 0;
-			myChar.delayFall = 0;
+
+			bool hasGround = TileMap.tileTypeAt(targetX, targetY + 12, 2);
 			myChar.statusMe = hasGround ? 1 : 10;
-
-			Service.isForceSendMove = true;
-			Service.gI().charMove();
-
-			if (wp != null)
-			{
-				doRequestChangeMap(wp, targetX, targetY);
-			}
-			return;
-		}
-
-		// KHÔNG CÓ TDLT: DỊCH CHUYỂN TỨC THỜI (Instant Teleport with Server Sub-step Sync)
-		// Trên màn hình: Nhân vật nhảy NGAY LẬP TỨC tới đích trong 1 khung hình (không lướt, không chạy)
-		// Lên Server: Đồng bộ các bước vi mô (mỗi bước <= 75px) để Server chấp nhận toàn bộ hành trình
-		int stepSize = 75;
-		int steps = (dist + stepSize - 1) / stepSize;
-		if (steps < 1) steps = 1;
-
-		for (int i = 1; i <= steps; i++)
-		{
-			int sX = startX + (targetX - startX) * i / steps;
-			int sY = startY + (targetY - startY) * i / steps;
-
-			myChar.cx = sX;
-			myChar.cy = sY;
 			myChar.cvy = 0;
 			myChar.cvx = 0;
 			myChar.delayFall = 0;
-			myChar.statusMe = (i == steps && hasGround) ? 1 : 10;
 
 			Service.isForceSendMove = true;
 			Service.gI().charMove();
-		}
 
-		// Đảm bảo tọa độ nhân vật ở máy khách là đích đến
-		myChar.cx = targetX;
-		myChar.cy = targetY;
-		myChar.cvy = 0;
-		myChar.cvx = 0;
-		myChar.delayFall = 0;
-		myChar.statusMe = hasGround ? 1 : 10;
-
-		if (wp != null)
-		{
 			doRequestChangeMap(wp, targetX, targetY);
+			notify("Dịch map -> " + wpName);
+		}
+		else
+		{
+			// TRƯỜNG HỢP 2: KHÔNG CÓ GIÁP LUYỆN TẬP & Ở XA CỔNG
+			// Cho nhân vật di chuyển an toàn đến cổng để game tự kích hoạt qua map mượt mà, không bị Server kick mất sóng [4]
+			myChar.currentMovePoint = new MovePoint(targetX, targetY);
+			myChar.cdir = (targetX > myChar.cx) ? 1 : -1;
+			if (wp.isEnter)
+			{
+				myChar.endMovePointCommand = new Command(null, wp, 2, null);
+			}
+			notify("Đang chạy đến " + wpName + " (Đeo Giáp Luyện Tập để dịch tức thời)");
 		}
 	}
 
@@ -1115,6 +1161,18 @@ public class ModManager : IActionListener
 	public static void sendChangeMapPacket(Waypoint wp)
 	{
 		if (wp == null) return;
+		if (wp.popup != null && wp.popup.command != null && wp.isEnter)
+		{
+			try
+			{
+				wp.popup.command.performAction();
+				return;
+			}
+			catch (Exception)
+			{
+			}
+		}
+
 		if (wp.isOffline || TileMap.isTrainingMap())
 		{
 			Service.gI().getMapOffline();
@@ -1278,22 +1336,35 @@ public class ModManager : IActionListener
 		}
 
 		// ĐÃ HẾT QUÁI TRONG MAP!
-		// Tuân thủ cooldown đổi khu 5.5 giây của server
-		if (now - lastZoneChangeTime < 5500L)
+		// Tuân thủ cooldown đổi khu 8 giây của server để không bao giờ bị báo chờ giây
+		if (now - lastZoneChangeTime < 8000L)
 		{
 			return;
 		}
 
-		int maxZ = (GameScr.gI().zones != null && GameScr.gI().zones.Length > 0) ? GameScr.gI().zones.Length : 20;
-		int nextZ = (TileMap.zoneID + 1) % maxZ;
-		lastZoneChangeTime = now;
-		isWaitingZoneData = false;
-
-		notify("Hết quái -> Chuyển sang khu " + nextZ);
-		Service.gI().requestChangeZone(nextZ, -1);
-		if (GameCanvas.panel != null && GameCanvas.panel.isShow)
+		// FALLBACK: Nếu đã gửi yêu cầu lấy danh sách khu quá 2500ms mà server chưa phản hồi
+		if (isWaitingZoneData && (now - lastZoneRequestTime >= 2500L))
 		{
-			GameCanvas.panel.hide();
+			isWaitingZoneData = false;
+			lastZoneChangeTime = now;
+			int maxZ = (GameScr.gI().zones != null && GameScr.gI().zones.Length > 0) ? GameScr.gI().zones.Length : 20;
+			int nextZ = (TileMap.zoneID + 1) % maxZ;
+			notify("Hết quái -> Chuyển sang khu " + nextZ);
+			Service.gI().requestChangeZone(nextZ, -1);
+			if (GameCanvas.panel != null && GameCanvas.panel.isShow)
+			{
+				GameCanvas.panel.hide();
+			}
+			return;
+		}
+
+		// Gửi yêu cầu mở danh sách khu để tìm khu 0 người hoặc ít người nhất
+		if (!isWaitingZoneData)
+		{
+			isWaitingZoneData = true;
+			lastZoneRequestTime = now;
+			lastZoneChangeTime = now;
+			Service.gI().openUIZone();
 		}
 	}
 
@@ -1551,23 +1622,15 @@ public class ModManager : IActionListener
 			// KHÔNG can thiệp tọa độ cx, cy của người chơi để người chơi đi lại tự do!
 			if (!isPlayerManuallyMoving())
 			{
-				int distToMob = Res.distance(myChar.cx, myChar.cy, desiredX, desiredY);
-				if (distToMob > 20)
+				if (Res.abs(myChar.cx - desiredX) > 20 || Res.abs(myChar.cy - desiredY) > 20)
 				{
-					if (distToMob > 80 && !GameScr.canAutoPlay && !isAutoTrainBuffActive())
+					myChar.cx = desiredX;
+					myChar.cy = desiredY;
+					myChar.cdir = (myChar.cx < targetMob.x) ? 1 : -1;
+					if (now - lastMoveSendTime >= 300L)
 					{
-						teleportInstant(desiredX, desiredY, null);
-					}
-					else
-					{
-						myChar.cx = desiredX;
-						myChar.cy = desiredY;
-						myChar.cdir = (myChar.cx < targetMob.x) ? 1 : -1;
-						if (now - lastMoveSendTime >= 250L)
-						{
-							lastMoveSendTime = now;
-							Service.gI().charMove();
-						}
+						lastMoveSendTime = now;
+						Service.gI().charMove();
 					}
 				}
 				else
@@ -2012,51 +2075,10 @@ public class ModManager : IActionListener
 		return false;
 	}
 
-	// Kiểm tra xem Bùa / Buff Tự Động Luyện Tập có đang hoạt động hay không
+	// Kiểm tra xem Bùa / Buff / Giáp Tự Động Luyện Tập có đang hoạt động hay không
 	public static bool isAutoTrainBuffActive()
 	{
-		try
-		{
-			if (GameScr.canAutoPlay)
-			{
-				return true;
-			}
-			// 1. Quét Char.vItemTime (Icon bánh răng vàng đặc trưng của TDLT)
-			if (Char.vItemTime != null)
-			{
-				for (int j = 0; j < Char.vItemTime.size(); j++)
-				{
-					ItemTime t = (ItemTime)Char.vItemTime.elementAt(j);
-					if (t != null)
-					{
-						if (t.idIcon == 4387 || t.idIcon == 4028 || t.idIcon == 521 || t.idIcon == 4330)
-						{
-							return true;
-						}
-					}
-				}
-			}
-			// 2. Quét GameScr.textTime nếu có
-			if (GameScr.textTime != null)
-			{
-				for (int j = 0; j < GameScr.textTime.size(); j++)
-				{
-					ItemTime t2 = (ItemTime)GameScr.textTime.elementAt(j);
-					if (t2 != null && !string.IsNullOrEmpty(t2.text))
-					{
-						string s = t2.text.ToLower();
-						if (s.Contains("luyện tập") || s.Contains("luyen tap") || s.Contains("tự động"))
-						{
-							return true;
-						}
-					}
-				}
-			}
-		}
-		catch (Exception)
-		{
-		}
-		return false;
+		return hasTrainingGearOrBuff();
 	}
 
 	// Tìm item Tự Động Luyện Tập trong hành trang
