@@ -3347,19 +3347,16 @@ public class Char : IMapObject
 	public void setResetPoint(int x, int y)
 	{
 		InfoDlg.hide();
+		GameCanvas.endDlg();
+		GameCanvas.currentDialog = null;
 		currentMovePoint = null;
-		int num = cx - x;
-		if (cy - y == 0)
-		{
-			cx = x;
-			ischangingMap = false;
-			isLockKey = false;
-			return;
-		}
-		statusMe = 16;
-		cp2 = x;
-		cp3 = y;
-		cp1 = 0;
+		cx = x;
+		cy = y;
+		statusMe = 1;
+		cvy = 0;
+		cvx = 0;
+		ischangingMap = false;
+		isLockKey = false;
 		myCharz().cxSend = x;
 		myCharz().cySend = y;
 	}

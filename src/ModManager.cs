@@ -238,6 +238,15 @@ public class ModManager : IActionListener
 	public static long lastTeleportRequestMapTime = 0L;
 	public static int teleportRequestCount = 0;
 
+	public static bool isPathTeleporting = false;
+	public static int pathCurrentX = 0;
+	public static int pathCurrentY = 0;
+	public static int pathTargetX = 0;
+	public static int pathTargetY = 0;
+	public static Waypoint pathPendingWaypoint = null;
+	public static long lastPathStepTime = 0L;
+	private static long lastTimeCheckTDLT = 0L;
+
 	public static void sendDirectMove(int x, int y)
 	{
 		try
@@ -262,23 +271,52 @@ public class ModManager : IActionListener
 		}
 	}
 
-	public static void sendTeleportPath(int fromX, int fromY, int toX, int toY)
+	public static void updatePathTeleport(long now)
 	{
 		try
 		{
-			int dist = Res.distance(fromX, fromY, toX, toY);
-			int stepSize = 65;
-			int steps = (dist + stepSize - 1) / stepSize;
-			if (steps < 1) steps = 1;
-			for (int i = 1; i <= steps; i++)
+			if (now - lastPathStepTime < 18L)
 			{
-				int sx = fromX + (toX - fromX) * i / steps;
-				int sy = fromY + (toY - fromY) * i / steps;
-				sendDirectMove(sx, sy);
+				return;
+			}
+			lastPathStepTime = now;
+
+			Char myChar = Char.myCharz();
+			if (myChar == null || Char.ischangingMap || Char.isLoadingMap)
+			{
+				isPathTeleporting = false;
+				pathPendingWaypoint = null;
+				return;
+			}
+
+			int dist = Res.distance(pathCurrentX, pathCurrentY, pathTargetX, pathTargetY);
+			int stepSize = 70;
+
+			if (dist <= stepSize)
+			{
+				pathCurrentX = pathTargetX;
+				pathCurrentY = pathTargetY;
+				sendDirectMove(pathTargetX, pathTargetY);
+				isPathTeleporting = false;
+
+				if (pathPendingWaypoint != null)
+				{
+					Waypoint wp = pathPendingWaypoint;
+					pathPendingWaypoint = null;
+					doRequestChangeMap(wp, pathTargetX, pathTargetY);
+				}
+			}
+			else
+			{
+				pathCurrentX += (pathTargetX - pathCurrentX) * stepSize / dist;
+				pathCurrentY += (pathTargetY - pathCurrentY) * stepSize / dist;
+				sendDirectMove(pathCurrentX, pathCurrentY);
 			}
 		}
 		catch (Exception)
 		{
+			isPathTeleporting = false;
+			pathPendingWaypoint = null;
 		}
 	}
 
@@ -297,6 +335,8 @@ public class ModManager : IActionListener
 		teleportRequestCount = 0;
 		Char.ischangingMap = false;
 		Char.isLockKey = false;
+		isPathTeleporting = false;
+		pathPendingWaypoint = null;
 		InfoDlg.hide();
 		GameCanvas.endDlg();
 		GameCanvas.currentDialog = null;
@@ -687,6 +727,19 @@ public class ModManager : IActionListener
 				updateAutoDrop(now);
 			}
 
+			// Cập nhật dịch chuyển vi mô an toàn cho người không có TDLT
+			if (isPathTeleporting)
+			{
+				updatePathTeleport(now);
+			}
+
+			// Tự động kiểm tra và mặc Giáp Luyện Tập nếu có trong túi
+			if (now - lastTimeCheckTDLT >= 2000L)
+			{
+				lastTimeCheckTDLT = now;
+				checkAutoActivateTDLT();
+			}
+
 			// Tự động đóng dialog "Xin chờ" nếu map đã đổi hoặc không còn trạng thái chuyển map
 			if (!Char.ischangingMap && !Char.isLoadingMap && InfoDlg.isShow)
 			{
@@ -708,8 +761,8 @@ public class ModManager : IActionListener
 				}
 				else
 				{
-					// Failsafe giải phóng khóa sau 1200ms nếu map không đổi (tránh treo 'Xin chờ')
-					if (now - lastChangeMapRequestTime > 1200L)
+					// Failsafe giải phóng khóa sau 2500ms nếu map không đổi (tránh treo 'Xin chờ')
+					if (now - lastChangeMapRequestTime > 2500L)
 					{
 						Char.ischangingMap = false;
 						Char.isLockKey = false;
@@ -718,6 +771,7 @@ public class ModManager : IActionListener
 						GameCanvas.currentDialog = null;
 						currentTeleportWaypoint = null;
 						pendingWaypoint = null;
+						isPathTeleporting = false;
 						lastChangeMapRequestTime = 0L;
 					}
 				}
@@ -872,8 +926,7 @@ public class ModManager : IActionListener
 
 	public static bool hasTrainingGearOrBuff()
 	{
-		GameScr.canAutoPlay = true;
-		return true;
+		return isRealTDLTActive();
 	}
 
 	public static int findAutoTrainBagIndex()
@@ -974,15 +1027,26 @@ public class ModManager : IActionListener
 		myChar.statusMe = 1;
 		myChar.cvy = 0;
 		myChar.cvx = 0;
-		myChar.delayFall = 0;
+		myChar.delayFall = 50;
 
-		if (isRealTDLTActive())
+		int bagIdx = findAutoTrainBagIndex();
+		bool hasTDLT = isRealTDLTActive() || (bagIdx >= 0);
+
+		if (hasTDLT)
 		{
+			isPathTeleporting = false;
+			pathPendingWaypoint = null;
 			sendDirectMove(targetX, targetY);
 		}
 		else
 		{
-			sendTeleportPath(startX, startY, targetX, targetY);
+			isPathTeleporting = true;
+			pathCurrentX = startX;
+			pathCurrentY = startY;
+			pathTargetX = targetX;
+			pathTargetY = targetY;
+			pathPendingWaypoint = null;
+			lastPathStepTime = 0L;
 		}
 	}
 
@@ -1198,7 +1262,7 @@ public class ModManager : IActionListener
 		int startX = myChar.cx;
 		int startY = myChar.cy;
 
-		// 1. Dịch chuyển tức thời 0ms trên màn hình client (mượt tuyệt đối như có TDLT)
+		// 1. Dịch chuyển tức thời trên màn hình client
 		myChar.cx = targetX;
 		myChar.cy = targetY;
 
@@ -1206,22 +1270,30 @@ public class ModManager : IActionListener
 		myChar.statusMe = hasGround ? 1 : 10;
 		myChar.cvy = 0;
 		myChar.cvx = 0;
-		myChar.delayFall = 0;
+		myChar.delayFall = 50;
 
-		// 2. Gửi đồng bộ vị trí lên server
-		if (isRealTDLTActive())
+		int bagIdx = findAutoTrainBagIndex();
+		bool hasTDLT = isRealTDLTActive() || (bagIdx >= 0);
+
+		if (hasTDLT)
 		{
+			// Có TDLT hoặc có Giáp Luyện Tập: Dịch chuyển tức thời 0ms
+			isPathTeleporting = false;
+			pathPendingWaypoint = null;
 			sendDirectMove(targetX, targetY);
+			doRequestChangeMap(wp, targetX, targetY);
 		}
 		else
 		{
-			// Không có TDLT: trick gửi chuỗi toạ độ vi mô (mỗi bước <= 65px)
-			// Server chấp nhận 100% tất cả các bước, không bao giờ bị giật ngược lại (Reset Point)!
-			sendTeleportPath(startX, startY, targetX, targetY);
+			// Không có TDLT / Giáp: Đi chuỗi tọa độ vi mô 70px an toàn qua các frame, không spam 0ms
+			isPathTeleporting = true;
+			pathCurrentX = startX;
+			pathCurrentY = startY;
+			pathTargetX = targetX;
+			pathTargetY = targetY;
+			pathPendingWaypoint = wp;
+			lastPathStepTime = 0L;
 		}
-
-		// 3. Gởi trực tiếp yêu cầu chuyển map lên Server
-		doRequestChangeMap(wp, targetX, targetY);
 
 		notify("Dịch map -> " + wpName);
 	}
@@ -1257,6 +1329,17 @@ public class ModManager : IActionListener
 		else
 		{
 			Service.gI().requestChangeMap();
+		}
+
+		if (wp.popup != null && wp.popup.command != null)
+		{
+			try
+			{
+				wp.popup.command.performAction();
+			}
+			catch (Exception)
+			{
+			}
 		}
 	}
 

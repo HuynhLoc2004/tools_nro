@@ -2955,6 +2955,12 @@ public class Controller : IMessageHandler
 				GameCanvas.debug("SA5", 2);
 				Cout.LogWarning("Controler RESET_POINT  " + Char.ischangingMap);
 				Char.isLockKey = false;
+				Char.ischangingMap = false;
+				ModManager.isPathTeleporting = false;
+				ModManager.pathPendingWaypoint = null;
+				InfoDlg.hide();
+				GameCanvas.endDlg();
+				GameCanvas.currentDialog = null;
 				Char.myCharz().setResetPoint(msg.reader().readShort(), msg.reader().readShort());
 				break;
 			case -29:
