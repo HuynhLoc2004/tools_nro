@@ -236,16 +236,17 @@ public class ModManager : IActionListener
 	public static long lastTeleportRequestMapTime = 0L;
 	public static int teleportRequestCount = 0;
 
-	// Thuật toán Vi Dịch Chuyển Siêu Tốc (Hỗ trợ khi KHÔNG có TDLT)
-	public static bool isMicroTeleporting = false;
-	public static int microStartX = -1;
-	public static int microStartY = -1;
-	public static int microTargetX = -1;
-	public static int microTargetY = -1;
-	public static Waypoint microTargetWp = null;
-	public static int microStepIndex = 0;
-	public static int microTotalSteps = 0;
-	public static long microStartTime = 0L;
+	// Thuật toán Lướt Cực Tốc An Toàn (Safe Sonic Dash - Không giật lag, không bay về nhà, không mất kết nối [4] khi KHÔNG có TDLT)
+	public static bool isDashing = false;
+	public static int dashStartX = -1;
+	public static int dashStartY = -1;
+	public static int dashTargetX = -1;
+	public static int dashTargetY = -1;
+	public static Waypoint dashTargetWp = null;
+	public static int dashStepIndex = 0;
+	public static int dashTotalSteps = 0;
+	public static long lastDashStepTime = 0L;
+	public static long dashStartTime = 0L;
 
 	public static bool isMapChangeCooldown()
 	{
@@ -259,8 +260,8 @@ public class ModManager : IActionListener
 		lastChangeMapFromMapId = TileMap.mapID;
 		currentTeleportWaypoint = null;
 		teleportRequestCount = 0;
-		isMicroTeleporting = false;
-		microTargetWp = null;
+		isDashing = false;
+		dashTargetWp = null;
 		Char.ischangingMap = false;
 		Char.isLockKey = false;
 		InfoDlg.hide();
@@ -675,15 +676,13 @@ public class ModManager : IActionListener
 						}
 					}
 
-					// Thử gửi lại packet sau mỗi 250ms nếu server chưa load map (tối đa 4 lần)
-					if (now - lastTeleportRequestMapTime >= 250L && teleportRequestCount < 4)
+					// Thử gửi lại packet sau mỗi 400ms nếu server chưa load map (tối đa 3 lần)
+					if (now - lastTeleportRequestMapTime >= 400L && teleportRequestCount < 3)
 					{
 						lastTeleportRequestMapTime = now;
 						teleportRequestCount++;
 						if (currentTeleportWaypoint != null)
 						{
-							Service.isForceSendMove = true;
-							Service.gI().charMove();
 							sendChangeMapPacket(currentTeleportWaypoint);
 						}
 					}
@@ -700,17 +699,71 @@ public class ModManager : IActionListener
 				}
 			}
 
-			// 9. Cập nhật Vi Dịch Chuyển Siêu Tốc (cho di chuyển & dịch map khi KHÔNG CÓ TDLT)
-			if (isMicroTeleporting)
+			// 9. Cập nhật Lướt Cực Tốc An Toàn (khi KHÔNG CÓ TDLT)
+			if (isDashing)
 			{
-				if (now - microStartTime > 2000L)
+				if (now - dashStartTime > 2500L)
 				{
-					isMicroTeleporting = false;
-					microTargetWp = null;
+					isDashing = false;
+					dashTargetWp = null;
+					Char.isLockKey = false;
 				}
-				else
+				else if (now - lastDashStepTime >= 55L) // Đúng nhịp an toàn 55ms (~18 bước/s), server không kick [4]
 				{
-					advanceMicroTeleport(2);
+					lastDashStepTime = now;
+					dashStepIndex++;
+					Char myChar = Char.myCharz();
+					if (myChar != null)
+					{
+						if (dashStepIndex >= dashTotalSteps)
+						{
+							// Đã đến đích an toàn!
+							isDashing = false;
+							myChar.cx = dashTargetX;
+							myChar.cy = dashTargetY;
+							myChar.cvx = 0;
+							myChar.cvy = 0;
+							myChar.delayFall = 0;
+
+							bool hasGround = TileMap.tileTypeAt(dashTargetX, dashTargetY + 12, 2);
+							myChar.statusMe = hasGround ? 1 : 10;
+
+							Service.isForceSendMove = true;
+							Service.gI().charMove();
+
+							if (dashTargetWp != null)
+							{
+								Waypoint wp = dashTargetWp;
+								dashTargetWp = null;
+								doRequestChangeMap(wp, dashTargetX, dashTargetY);
+							}
+							else
+							{
+								Char.isLockKey = false;
+							}
+						}
+						else
+						{
+							// Di chuyển từng bước trên không an toàn (tránh rớt hố, rớt vực Maima, va chạm địa hình)
+							int curX = dashStartX + (dashTargetX - dashStartX) * dashStepIndex / dashTotalSteps;
+							int curY = dashStartY + (dashTargetY - dashStartY) * dashStepIndex / dashTotalSteps;
+
+							if (TileMap.tileTypeAt(curX, curY + 6, 2))
+							{
+								curY -= 6;
+							}
+
+							myChar.cx = curX;
+							myChar.cy = curY;
+							myChar.cvx = 0;
+							myChar.cvy = 0;
+							myChar.delayFall = 0;
+							myChar.statusMe = 10; // Giữ bay trên không để server chấp nhận packet di chuyển an toàn
+
+							Service.isForceSendMove = true;
+							Service.gI().charMove();
+						}
+					}
 				}
 			}
 		}
@@ -880,13 +933,13 @@ public class ModManager : IActionListener
 
 		checkAutoActivateTDLT();
 
-		startMicroTeleport(targetX, targetY, null);
+		startSafeDash(targetX, targetY, null);
 	}
 
 	public static void handleQuickMapChange(int dir)
 	{
 		long now = mSystem.currentTimeMillis();
-		if (now - lastChangeMapRequestTime < 500L) return;
+		if (isDashing || now - lastChangeMapRequestTime < 500L) return;
 
 		Char myChar = Char.myCharz();
 		if (myChar == null) return;
@@ -1014,37 +1067,19 @@ public class ModManager : IActionListener
 		Char myChar = Char.myCharz();
 		if (myChar == null) return;
 
-		// 1. Xác định tọa độ X chuẩn (nằm hoàn toàn bên trong vùng cổng)
+		// 1. Xác định tọa độ X chuẩn: nằm chính giữa vùng cổng (100% hợp lệ bên trong [minX, maxX])
 		int targetX = (wp.minX + wp.maxX) / 2;
-		if (wp.minX <= 60)
-		{
-			targetX = wp.minX + 15;
-			myChar.cdir = -1;
-		}
-		else if (wp.maxX >= TileMap.pxw - 60)
-		{
-			targetX = wp.maxX - 15;
-			myChar.cdir = 1;
-		}
-		else
-		{
-			targetX = (wp.minX + wp.maxX) / 2;
-			myChar.cdir = (targetX > TileMap.pxw / 2) ? 1 : -1;
-		}
+		myChar.cdir = (targetX > TileMap.pxw / 2) ? 1 : -1;
 
-		// 2. Xác định tọa độ Y chuẩn
-		int targetY = -1;
-		for (int y = wp.maxY + 12; y >= wp.minY - 12; y -= 12)
+		// 2. Xác định tọa độ Y chuẩn:
+		int targetY = (wp.minY + wp.maxY) / 2;
+		for (int y = wp.maxY; y >= wp.minY; y -= 4)
 		{
 			if (TileMap.tileTypeAt(targetX, y, 2))
 			{
-				targetY = (y / 24) * 24;
+				targetY = y;
 				break;
 			}
-		}
-		if (targetY == -1 || targetY < wp.minY || targetY > wp.maxY)
-		{
-			targetY = (wp.minY + wp.maxY) / 2;
 		}
 
 		myChar.currentMovePoint = null;
@@ -1069,11 +1104,11 @@ public class ModManager : IActionListener
 		string wpName = (wp.popup != null && wp.popup.says != null && wp.popup.says.Length > 0) ? wp.popup.says[0] : "Cổng";
 		notify("Dịch map -> " + wpName);
 
-		// Dịch chuyển đến cổng bằng thuật toán vi bước siêu tốc (tương thích cả khi CÓ hoặc KHÔNG có TDLT)
-		startMicroTeleport(targetX, targetY, wp);
+		// Di chuyển đến cổng bằng thuật toán Lướt Cực Tốc An Toàn (tương thích cả khi CÓ hoặc KHÔNG có TDLT)
+		startSafeDash(targetX, targetY, wp);
 	}
 
-	public static void startMicroTeleport(int targetX, int targetY, Waypoint wp = null)
+	public static void startSafeDash(int targetX, int targetY, Waypoint wp = null)
 	{
 		Char myChar = Char.myCharz();
 		if (myChar == null) return;
@@ -1082,11 +1117,12 @@ public class ModManager : IActionListener
 		int startY = myChar.cy;
 		int dist = Res.distance(startX, startY, targetX, targetY);
 
-		// Nếu khoảng cách rất gần (< 65px) hoặc đang có TDLT kích hoạt:
-		if (dist <= 65 || GameScr.canAutoPlay || isAutoTrainBuffActive())
+		// Nếu khoảng cách rất gần (<= 70px) hoặc CÓ TỰ ĐỘNG LUYỆN TẬP:
+		// Dịch chuyển tức thời 1 frame (siêu mượt)
+		if (dist <= 70 || GameScr.canAutoPlay || isAutoTrainBuffActive())
 		{
-			isMicroTeleporting = false;
-			microTargetWp = null;
+			isDashing = false;
+			dashTargetWp = null;
 
 			myChar.cx = targetX;
 			myChar.cy = targetY;
@@ -1095,14 +1131,7 @@ public class ModManager : IActionListener
 			myChar.delayFall = 0;
 
 			bool hasGround = TileMap.tileTypeAt(targetX, targetY + 12, 2);
-			if (hasGround)
-			{
-				myChar.statusMe = 1;
-			}
-			else
-			{
-				myChar.statusMe = 10;
-			}
+			myChar.statusMe = hasGround ? 1 : 10;
 
 			Service.isForceSendMove = true;
 			Service.gI().charMove();
@@ -1114,97 +1143,26 @@ public class ModManager : IActionListener
 			return;
 		}
 
-		// KHÔNG CÓ TDLT: DÙNG THUẬT TOÁN VI BƯỚC SIÊU TỐC (SAFE MULTI-STEP DISPATCH)
-		// Bước di chuyển 65px/bước (Server kiểm tra ngưỡng 100px nên 65px an toàn 100%)
-		int stepSize = 65;
+		// KHÔNG CÓ TDLT: LƯỚT CỰC TỐC AN TOÀN (Safe Sonic Dash)
+		// Bước lướt 70px/bước (Server kiểm tra ngưỡng 100px nên 70px an toàn 100%)
+		// Nhịp 55ms gửi 1 gói move -> Server nhận ~18 gói/giây -> KHÔNG BAO GIỜ bị lỗi mất sóng [4]
+		int stepSize = 70;
 		int totalSteps = (dist + stepSize - 1) / stepSize;
 		if (totalSteps < 1) totalSteps = 1;
 
-		isMicroTeleporting = true;
-		microStartX = startX;
-		microStartY = startY;
-		microTargetX = targetX;
-		microTargetY = targetY;
-		microTargetWp = wp;
-		microStepIndex = 0;
-		microTotalSteps = totalSteps;
-		microStartTime = mSystem.currentTimeMillis();
+		isDashing = true;
+		dashStartX = startX;
+		dashStartY = startY;
+		dashTargetX = targetX;
+		dashTargetY = targetY;
+		dashTargetWp = wp;
+		dashStepIndex = 0;
+		dashTotalSteps = totalSteps;
+		lastDashStepTime = mSystem.currentTimeMillis();
+		dashStartTime = lastDashStepTime;
 
-		if (wp != null)
-		{
-			Char.isLockKey = true;
-			Char.ischangingMap = true;
-			InfoDlg.showWait();
-		}
-
-		// Thực hiện ngay 2 bước đầu tiên trong frame này
-		advanceMicroTeleport(2);
-	}
-
-	public static void advanceMicroTeleport(int count)
-	{
-		Char myChar = Char.myCharz();
-		if (myChar == null || !isMicroTeleporting) return;
-
-		for (int i = 0; i < count; i++)
-		{
-			microStepIndex++;
-			if (microStepIndex >= microTotalSteps)
-			{
-				// Đến đích!
-				myChar.cx = microTargetX;
-				myChar.cy = microTargetY;
-				myChar.cvy = 0;
-				myChar.cvx = 0;
-				myChar.delayFall = 0;
-
-				bool hasGround = TileMap.tileTypeAt(microTargetX, microTargetY + 12, 2);
-				if (hasGround)
-				{
-					myChar.statusMe = 1;
-				}
-				else
-				{
-					myChar.statusMe = 10;
-				}
-
-				Service.isForceSendMove = true;
-				Service.gI().charMove();
-
-				isMicroTeleporting = false;
-
-				if (microTargetWp != null)
-				{
-					doRequestChangeMap(microTargetWp, microTargetX, microTargetY);
-					microTargetWp = null;
-				}
-				break;
-			}
-			else
-			{
-				int curX = microStartX + (microTargetX - microStartX) * microStepIndex / microTotalSteps;
-				int curY = microStartY + (microTargetY - microStartY) * microStepIndex / microTotalSteps;
-
-				myChar.cx = curX;
-				myChar.cy = curY;
-				myChar.cvy = 0;
-				myChar.cvx = 0;
-				myChar.delayFall = 0;
-
-				bool hasGround = TileMap.tileTypeAt(curX, curY + 12, 2);
-				if (hasGround)
-				{
-					myChar.statusMe = 1;
-				}
-				else
-				{
-					myChar.statusMe = 10;
-				}
-
-				Service.isForceSendMove = true;
-				Service.gI().charMove();
-			}
-		}
+		// Khóa phím tạm thời để người chơi không nhấn phím đè lên hướng bay, nhưng CHƯA set ischangingMap
+		Char.isLockKey = true;
 	}
 
 	private static void doRequestChangeMap(Waypoint wp, int targetX, int targetY)
@@ -1681,11 +1639,11 @@ public class ModManager : IActionListener
 				int distToMob = Res.distance(myChar.cx, myChar.cy, desiredX, desiredY);
 				if (distToMob > 20)
 				{
-					if (distToMob > 80 && !GameScr.canAutoPlay && !isAutoTrainBuffActive() && !isMicroTeleporting)
+					if (distToMob > 80 && !GameScr.canAutoPlay && !isAutoTrainBuffActive() && !isDashing)
 					{
-						startMicroTeleport(desiredX, desiredY, null);
+						startSafeDash(desiredX, desiredY, null);
 					}
-					else if (!isMicroTeleporting)
+					else if (!isDashing)
 					{
 						myChar.cx = desiredX;
 						myChar.cy = desiredY;
