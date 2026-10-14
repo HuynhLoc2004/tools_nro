@@ -236,6 +236,17 @@ public class ModManager : IActionListener
 	public static long lastTeleportRequestMapTime = 0L;
 	public static int teleportRequestCount = 0;
 
+	// Thuật toán Vi Dịch Chuyển Siêu Tốc (Hỗ trợ khi KHÔNG có TDLT)
+	public static bool isMicroTeleporting = false;
+	public static int microStartX = -1;
+	public static int microStartY = -1;
+	public static int microTargetX = -1;
+	public static int microTargetY = -1;
+	public static Waypoint microTargetWp = null;
+	public static int microStepIndex = 0;
+	public static int microTotalSteps = 0;
+	public static long microStartTime = 0L;
+
 	public static bool isMapChangeCooldown()
 	{
 		return mSystem.currentTimeMillis() - lastChangeMapSuccessTime < 600L;
@@ -248,6 +259,8 @@ public class ModManager : IActionListener
 		lastChangeMapFromMapId = TileMap.mapID;
 		currentTeleportWaypoint = null;
 		teleportRequestCount = 0;
+		isMicroTeleporting = false;
+		microTargetWp = null;
 		Char.ischangingMap = false;
 		Char.isLockKey = false;
 		InfoDlg.hide();
@@ -686,6 +699,20 @@ public class ModManager : IActionListener
 					}
 				}
 			}
+
+			// 9. Cập nhật Vi Dịch Chuyển Siêu Tốc (cho di chuyển & dịch map khi KHÔNG CÓ TDLT)
+			if (isMicroTeleporting)
+			{
+				if (now - microStartTime > 2000L)
+				{
+					isMicroTeleporting = false;
+					microTargetWp = null;
+				}
+				else
+				{
+					advanceMicroTeleport(2);
+				}
+			}
 		}
 		catch (Exception)
 		{
@@ -853,15 +880,7 @@ public class ModManager : IActionListener
 
 		checkAutoActivateTDLT();
 
-		myChar.cx = targetX;
-		myChar.cy = targetY;
-		myChar.statusMe = 1;
-		myChar.cvy = 0;
-		myChar.cvx = 0;
-		myChar.delayFall = 0;
-
-		Service.isForceSendMove = true;
-		Service.gI().charMove();
+		startMicroTeleport(targetX, targetY, null);
 	}
 
 	public static void handleQuickMapChange(int dir)
@@ -1047,31 +1066,145 @@ public class ModManager : IActionListener
 
 		checkAutoActivateTDLT();
 
-		// Đặt tọa độ nhân vật
-		myChar.cx = targetX;
-		myChar.cy = targetY;
-
-		bool hasGround = TileMap.tileTypeAt(targetX, targetY + 12, 2);
-		if (hasGround)
-		{
-			myChar.statusMe = 1; // Đứng đất
-		}
-		else
-		{
-			myChar.statusMe = 10; // Bay lơ lửng trên không (cổng trên không như tàu bay)
-		}
-		myChar.cvy = 0;
-		myChar.cvx = 0;
-		myChar.delayFall = 0;
-
-		Service.isForceSendMove = true;
-		Service.gI().charMove();
-
-		// Gửi trực tiếp yêu cầu chuyển map lên Server
-		doRequestChangeMap(wp, targetX, targetY);
-
 		string wpName = (wp.popup != null && wp.popup.says != null && wp.popup.says.Length > 0) ? wp.popup.says[0] : "Cổng";
 		notify("Dịch map -> " + wpName);
+
+		// Dịch chuyển đến cổng bằng thuật toán vi bước siêu tốc (tương thích cả khi CÓ hoặc KHÔNG có TDLT)
+		startMicroTeleport(targetX, targetY, wp);
+	}
+
+	public static void startMicroTeleport(int targetX, int targetY, Waypoint wp = null)
+	{
+		Char myChar = Char.myCharz();
+		if (myChar == null) return;
+
+		int startX = myChar.cx;
+		int startY = myChar.cy;
+		int dist = Res.distance(startX, startY, targetX, targetY);
+
+		// Nếu khoảng cách rất gần (< 65px) hoặc đang có TDLT kích hoạt:
+		if (dist <= 65 || GameScr.canAutoPlay || isAutoTrainBuffActive())
+		{
+			isMicroTeleporting = false;
+			microTargetWp = null;
+
+			myChar.cx = targetX;
+			myChar.cy = targetY;
+			myChar.cvy = 0;
+			myChar.cvx = 0;
+			myChar.delayFall = 0;
+
+			bool hasGround = TileMap.tileTypeAt(targetX, targetY + 12, 2);
+			if (hasGround)
+			{
+				myChar.statusMe = 1;
+			}
+			else
+			{
+				myChar.statusMe = 10;
+			}
+
+			Service.isForceSendMove = true;
+			Service.gI().charMove();
+
+			if (wp != null)
+			{
+				doRequestChangeMap(wp, targetX, targetY);
+			}
+			return;
+		}
+
+		// KHÔNG CÓ TDLT: DÙNG THUẬT TOÁN VI BƯỚC SIÊU TỐC (SAFE MULTI-STEP DISPATCH)
+		// Bước di chuyển 65px/bước (Server kiểm tra ngưỡng 100px nên 65px an toàn 100%)
+		int stepSize = 65;
+		int totalSteps = (dist + stepSize - 1) / stepSize;
+		if (totalSteps < 1) totalSteps = 1;
+
+		isMicroTeleporting = true;
+		microStartX = startX;
+		microStartY = startY;
+		microTargetX = targetX;
+		microTargetY = targetY;
+		microTargetWp = wp;
+		microStepIndex = 0;
+		microTotalSteps = totalSteps;
+		microStartTime = mSystem.currentTimeMillis();
+
+		if (wp != null)
+		{
+			Char.isLockKey = true;
+			Char.ischangingMap = true;
+			InfoDlg.showWait();
+		}
+
+		// Thực hiện ngay 2 bước đầu tiên trong frame này
+		advanceMicroTeleport(2);
+	}
+
+	public static void advanceMicroTeleport(int count)
+	{
+		Char myChar = Char.myCharz();
+		if (myChar == null || !isMicroTeleporting) return;
+
+		for (int i = 0; i < count; i++)
+		{
+			microStepIndex++;
+			if (microStepIndex >= microTotalSteps)
+			{
+				// Đến đích!
+				myChar.cx = microTargetX;
+				myChar.cy = microTargetY;
+				myChar.cvy = 0;
+				myChar.cvx = 0;
+				myChar.delayFall = 0;
+
+				bool hasGround = TileMap.tileTypeAt(microTargetX, microTargetY + 12, 2);
+				if (hasGround)
+				{
+					myChar.statusMe = 1;
+				}
+				else
+				{
+					myChar.statusMe = 10;
+				}
+
+				Service.isForceSendMove = true;
+				Service.gI().charMove();
+
+				isMicroTeleporting = false;
+
+				if (microTargetWp != null)
+				{
+					doRequestChangeMap(microTargetWp, microTargetX, microTargetY);
+					microTargetWp = null;
+				}
+				break;
+			}
+			else
+			{
+				int curX = microStartX + (microTargetX - microStartX) * microStepIndex / microTotalSteps;
+				int curY = microStartY + (microTargetY - microStartY) * microStepIndex / microTotalSteps;
+
+				myChar.cx = curX;
+				myChar.cy = curY;
+				myChar.cvy = 0;
+				myChar.cvx = 0;
+				myChar.delayFall = 0;
+
+				bool hasGround = TileMap.tileTypeAt(curX, curY + 12, 2);
+				if (hasGround)
+				{
+					myChar.statusMe = 1;
+				}
+				else
+				{
+					myChar.statusMe = 10;
+				}
+
+				Service.isForceSendMove = true;
+				Service.gI().charMove();
+			}
+		}
 	}
 
 	private static void doRequestChangeMap(Waypoint wp, int targetX, int targetY)
@@ -1272,35 +1405,22 @@ public class ModManager : IActionListener
 		}
 
 		// ĐÃ HẾT QUÁI TRONG MAP!
-		// Tuân thủ cooldown đổi khu 8 giây của server để không bao giờ bị báo chờ giây
-		if (now - lastZoneChangeTime < 8000L)
+		// Tuân thủ cooldown đổi khu 5.5 giây của server
+		if (now - lastZoneChangeTime < 5500L)
 		{
 			return;
 		}
 
-		// FALLBACK: Nếu đã gửi yêu cầu lấy danh sách khu quá 2500ms mà server chưa phản hồi
-		if (isWaitingZoneData && (now - lastZoneRequestTime >= 2500L))
-		{
-			isWaitingZoneData = false;
-			lastZoneChangeTime = now;
-			int maxZ = (GameScr.gI().zones != null && GameScr.gI().zones.Length > 0) ? GameScr.gI().zones.Length : 20;
-			int nextZ = (TileMap.zoneID + 1) % maxZ;
-			notify("Hết quái -> Chuyển sang khu " + nextZ);
-			Service.gI().requestChangeZone(nextZ, -1);
-			if (GameCanvas.panel != null && GameCanvas.panel.isShow)
-			{
-				GameCanvas.panel.hide();
-			}
-			return;
-		}
+		int maxZ = (GameScr.gI().zones != null && GameScr.gI().zones.Length > 0) ? GameScr.gI().zones.Length : 20;
+		int nextZ = (TileMap.zoneID + 1) % maxZ;
+		lastZoneChangeTime = now;
+		isWaitingZoneData = false;
 
-		// Gửi yêu cầu mở danh sách khu để tìm khu 0 người hoặc ít người nhất
-		if (!isWaitingZoneData)
+		notify("Hết quái -> Chuyển sang khu " + nextZ);
+		Service.gI().requestChangeZone(nextZ, -1);
+		if (GameCanvas.panel != null && GameCanvas.panel.isShow)
 		{
-			isWaitingZoneData = true;
-			lastZoneRequestTime = now;
-			lastZoneChangeTime = now;
-			Service.gI().openUIZone();
+			GameCanvas.panel.hide();
 		}
 	}
 
@@ -1558,15 +1678,23 @@ public class ModManager : IActionListener
 			// KHÔNG can thiệp tọa độ cx, cy của người chơi để người chơi đi lại tự do!
 			if (!isPlayerManuallyMoving())
 			{
-				if (Res.abs(myChar.cx - desiredX) > 20 || Res.abs(myChar.cy - desiredY) > 20)
+				int distToMob = Res.distance(myChar.cx, myChar.cy, desiredX, desiredY);
+				if (distToMob > 20)
 				{
-					myChar.cx = desiredX;
-					myChar.cy = desiredY;
-					myChar.cdir = (myChar.cx < targetMob.x) ? 1 : -1;
-					if (now - lastMoveSendTime >= 300L)
+					if (distToMob > 80 && !GameScr.canAutoPlay && !isAutoTrainBuffActive() && !isMicroTeleporting)
 					{
-						lastMoveSendTime = now;
-						Service.gI().charMove();
+						startMicroTeleport(desiredX, desiredY, null);
+					}
+					else if (!isMicroTeleporting)
+					{
+						myChar.cx = desiredX;
+						myChar.cy = desiredY;
+						myChar.cdir = (myChar.cx < targetMob.x) ? 1 : -1;
+						if (now - lastMoveSendTime >= 250L)
+						{
+							lastMoveSendTime = now;
+							Service.gI().charMove();
+						}
 					}
 				}
 				else
