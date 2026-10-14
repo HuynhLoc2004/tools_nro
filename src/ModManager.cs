@@ -231,6 +231,8 @@ public class ModManager : IActionListener
 	public static int lastChangeMapFromMapId = -1;
 	public static long lastChangeMapSuccessTime = 0L;
 	public static Waypoint currentTeleportWaypoint = null;
+	public static Waypoint pendingWaypoint = null;
+	public static long pendingChangeMapSendTime = 0L;
 	public static int teleportTargetX = -1;
 	public static int teleportTargetY = -1;
 	public static long lastTeleportRequestMapTime = 0L;
@@ -238,7 +240,7 @@ public class ModManager : IActionListener
 
 	public static bool isMapChangeCooldown()
 	{
-		return mSystem.currentTimeMillis() - lastChangeMapSuccessTime < 600L;
+		return mSystem.currentTimeMillis() - lastChangeMapSuccessTime < 400L;
 	}
 
 	public static void onMapLoaded()
@@ -247,10 +249,14 @@ public class ModManager : IActionListener
 		lastChangeMapRequestTime = 0L;
 		lastChangeMapFromMapId = TileMap.mapID;
 		currentTeleportWaypoint = null;
+		pendingWaypoint = null;
+		pendingChangeMapSendTime = 0L;
 		teleportRequestCount = 0;
 		Char.ischangingMap = false;
 		Char.isLockKey = false;
 		InfoDlg.hide();
+		GameCanvas.endDlg();
+		GameCanvas.currentDialog = null;
 
 		// Nudge nhân vật ra khỏi cổng vừa bước ra nếu đang đứng đè lên cổng để tránh bị hút ngược lại map cũ
 		try
@@ -638,6 +644,14 @@ public class ModManager : IActionListener
 				updateAutoDrop(now);
 			}
 
+			// Xử lý gửi packet chuyển map sau 60ms để Server kịp nhận toạ độ charMove trước
+			if (pendingWaypoint != null && now >= pendingChangeMapSendTime)
+			{
+				Waypoint wp = pendingWaypoint;
+				pendingWaypoint = null;
+				doRequestChangeMap(wp, teleportTargetX, teleportTargetY);
+			}
+
 			// 8. Quản lý trạng thái chuyển map (chống kẹt / an toàn)
 			if (Char.ischangingMap)
 			{
@@ -648,13 +662,16 @@ public class ModManager : IActionListener
 				}
 				else
 				{
-					// Failsafe giải phóng khóa sau 1500ms nếu map không đổi (tránh treo 'Xin chờ')
-					if (now - lastChangeMapRequestTime > 1500L)
+					// Failsafe giải phóng khóa sau 1200ms nếu map không đổi (tránh treo 'Xin chờ')
+					if (now - lastChangeMapRequestTime > 1200L)
 					{
 						Char.ischangingMap = false;
 						Char.isLockKey = false;
 						InfoDlg.hide();
+						GameCanvas.endDlg();
+						GameCanvas.currentDialog = null;
 						currentTeleportWaypoint = null;
+						pendingWaypoint = null;
 						lastChangeMapRequestTime = 0L;
 					}
 				}
@@ -846,7 +863,24 @@ public class ModManager : IActionListener
 	public static void handleQuickMapChange(int dir)
 	{
 		long now = mSystem.currentTimeMillis();
-		if (now - lastChangeMapRequestTime < 500L) return;
+
+		// 1. Không nhận phím khi map đang load dở
+		if (Char.isLoadingMap || GameCanvas.isLoading)
+		{
+			return;
+		}
+
+		// 2. Cooldown an toàn 700ms sau khi map vừa load xong (cho Server ổn định session, chống mất sóng [4])
+		if (now - lastChangeMapSuccessTime < 700L)
+		{
+			return;
+		}
+
+		// 3. Cooldown giữa các lần yêu cầu hoặc khi đang chờ gửi packet 60ms
+		if (now - lastChangeMapRequestTime < 800L || pendingWaypoint != null)
+		{
+			return;
+		}
 
 		Char myChar = Char.myCharz();
 		if (myChar == null) return;
@@ -858,6 +892,8 @@ public class ModManager : IActionListener
 				Char.ischangingMap = false;
 				Char.isLockKey = false;
 				InfoDlg.hide();
+				GameCanvas.endDlg();
+				GameCanvas.currentDialog = null;
 			}
 			else
 			{
@@ -1028,7 +1064,7 @@ public class ModManager : IActionListener
 
 		GameScr.canAutoPlay = true;
 
-		// DỊCH CHUYỂN TỨC THỜI 1 FRAME (CHUẨN NHÁNH MAIN - KHÔNG CHẠY BỘ)
+		// DỊCH CHUYỂN TỨC THỜI 1 FRAME (TỌA ĐỘ VÀO CỔNG)
 		myChar.cx = targetX;
 		myChar.cy = targetY;
 
@@ -1038,10 +1074,15 @@ public class ModManager : IActionListener
 		myChar.cvx = 0;
 		myChar.delayFall = 0;
 
+		// 1. Gửi ngay toạ độ mới lên Server
 		Service.isForceSendMove = true;
 		Service.gI().charMove();
 
-		doRequestChangeMap(wp, targetX, targetY);
+		// 2. Đặt lịch gửi packet đổi map sau 60ms để Server chắc chắn đã lưu vị trí mới
+		teleportTargetX = targetX;
+		teleportTargetY = targetY;
+		pendingWaypoint = wp;
+		pendingChangeMapSendTime = mSystem.currentTimeMillis() + 60L;
 
 		string wpName = (wp.popup != null && wp.popup.says != null && wp.popup.says.Length > 0) ? wp.popup.says[0] : "Cổng";
 		notify("Dịch map -> " + wpName);
@@ -1070,17 +1111,6 @@ public class ModManager : IActionListener
 	public static void sendChangeMapPacket(Waypoint wp)
 	{
 		if (wp == null) return;
-		if (wp.popup != null && wp.popup.command != null && wp.isEnter)
-		{
-			try
-			{
-				wp.popup.command.performAction();
-				return;
-			}
-			catch (Exception)
-			{
-			}
-		}
 
 		if (wp.isOffline || TileMap.isTrainingMap())
 		{
