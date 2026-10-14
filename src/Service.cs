@@ -961,7 +961,7 @@ public class Service
 		long now = mSystem.currentTimeMillis();
 		if (!force)
 		{
-			if (Char.ischangingMap || (num == 0 && num2 == 0) || Controller.isStopReadMessage || Char.myCharz().isTeleport || Char.myCharz().cy <= 0 || Char.myCharz().telePortSkill)
+			if (ModManager.isPathTeleporting || Char.ischangingMap || (num == 0 && num2 == 0) || Controller.isStopReadMessage || Char.myCharz().isTeleport || Char.myCharz().cy <= 0 || Char.myCharz().telePortSkill)
 			{
 				return;
 			}

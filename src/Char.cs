@@ -1710,7 +1710,7 @@ public class Char : IMapObject
 
 	public bool isInWaypoint()
 	{
-		if (ModManager.isMapChangeCooldown())
+		if (ModManager.isMapChangeCooldown() || ModManager.isPathTeleporting)
 		{
 			return false;
 		}

@@ -275,14 +275,14 @@ public class ModManager : IActionListener
 	{
 		try
 		{
-			if (now - lastPathStepTime < 18L)
+			if (now - lastPathStepTime < 25L)
 			{
 				return;
 			}
 			lastPathStepTime = now;
 
 			Char myChar = Char.myCharz();
-			if (myChar == null || Char.ischangingMap || Char.isLoadingMap)
+			if (myChar == null || Char.isLoadingMap)
 			{
 				isPathTeleporting = false;
 				pathPendingWaypoint = null;
@@ -290,12 +290,18 @@ public class ModManager : IActionListener
 			}
 
 			int dist = Res.distance(pathCurrentX, pathCurrentY, pathTargetX, pathTargetY);
-			int stepSize = 70;
+			int stepSize = 95;
 
 			if (dist <= stepSize)
 			{
 				pathCurrentX = pathTargetX;
 				pathCurrentY = pathTargetY;
+				myChar.cx = pathTargetX;
+				myChar.cy = pathTargetY;
+				myChar.cvy = 0;
+				myChar.cvx = 0;
+				bool hasGround = TileMap.tileTypeAt(pathTargetX, pathTargetY + 12, 2);
+				myChar.statusMe = hasGround ? 1 : 10;
 				sendDirectMove(pathTargetX, pathTargetY);
 				isPathTeleporting = false;
 
@@ -310,6 +316,12 @@ public class ModManager : IActionListener
 			{
 				pathCurrentX += (pathTargetX - pathCurrentX) * stepSize / dist;
 				pathCurrentY += (pathTargetY - pathCurrentY) * stepSize / dist;
+				myChar.cx = pathCurrentX;
+				myChar.cy = pathCurrentY;
+				myChar.cdir = (pathTargetX > pathCurrentX) ? 1 : -1;
+				myChar.statusMe = 2; // Hiển thị lướt / chạy cực mượt
+				myChar.cvy = 0;
+				myChar.cvx = 0;
 				sendDirectMove(pathCurrentX, pathCurrentY);
 			}
 		}
@@ -733,13 +745,6 @@ public class ModManager : IActionListener
 				updatePathTeleport(now);
 			}
 
-			// Tự động kiểm tra và mặc Giáp Luyện Tập nếu có trong túi
-			if (now - lastTimeCheckTDLT >= 2000L)
-			{
-				lastTimeCheckTDLT = now;
-				checkAutoActivateTDLT();
-			}
-
 			// Tự động đóng dialog "Xin chờ" nếu map đã đổi hoặc không còn trạng thái chuyển map
 			if (!Char.ischangingMap && !Char.isLoadingMap && InfoDlg.isShow)
 			{
@@ -761,8 +766,8 @@ public class ModManager : IActionListener
 				}
 				else
 				{
-					// Failsafe giải phóng khóa sau 2500ms nếu map không đổi (tránh treo 'Xin chờ')
-					if (now - lastChangeMapRequestTime > 2500L)
+					// Failsafe giải phóng khóa sau 1500ms nếu map không đổi (tránh treo 'Xin chờ')
+					if (now - lastChangeMapRequestTime > 1500L)
 					{
 						Char.ischangingMap = false;
 						Char.isLockKey = false;
@@ -1015,25 +1020,21 @@ public class ModManager : IActionListener
 		GameCanvas.clearKeyHold();
 		GameCanvas.clearKeyPressed();
 
-		checkAutoActivateTDLT();
-
 		GameScr.canAutoPlay = true;
 
 		int startX = myChar.cx;
 		int startY = myChar.cy;
 
-		myChar.cx = targetX;
-		myChar.cy = targetY;
-		myChar.statusMe = 1;
-		myChar.cvy = 0;
-		myChar.cvx = 0;
-		myChar.delayFall = 50;
-
-		int bagIdx = findAutoTrainBagIndex();
-		bool hasTDLT = isRealTDLTActive() || (bagIdx >= 0);
+		bool hasTDLT = isRealTDLTActive();
 
 		if (hasTDLT)
 		{
+			myChar.cx = targetX;
+			myChar.cy = targetY;
+			myChar.statusMe = 1;
+			myChar.cvy = 0;
+			myChar.cvx = 0;
+			myChar.delayFall = 50;
 			isPathTeleporting = false;
 			pathPendingWaypoint = null;
 			sendDirectMove(targetX, targetY);
@@ -1060,15 +1061,15 @@ public class ModManager : IActionListener
 			return;
 		}
 
-		// 2. Cooldown an toàn sau khi map vừa load xong (thích ứng theo tốc độ hiện tại)
-		long settleCooldown = (long)Mathf.Max(150f, 600f / Mathf.Sqrt(currentSpeed));
+		// 2. Cooldown ngắn mượt sau khi map vừa load xong
+		long settleCooldown = 120L;
 		if (now - lastChangeMapSuccessTime < settleCooldown)
 		{
 			return;
 		}
 
-		// 3. Cooldown giữa các lần yêu cầu
-		long requestCooldown = (long)Mathf.Max(180f, 700f / Mathf.Sqrt(currentSpeed));
+		// 3. Cooldown phím (150ms)
+		long requestCooldown = 150L;
 		if (now - lastChangeMapRequestTime < requestCooldown)
 		{
 			return;
@@ -1077,9 +1078,16 @@ public class ModManager : IActionListener
 		Char myChar = Char.myCharz();
 		if (myChar == null) return;
 
+		// Nếu đang lướt dở mà ấn phím khác, hủy lướt cũ ngay lập tức
+		if (isPathTeleporting)
+		{
+			isPathTeleporting = false;
+			pathPendingWaypoint = null;
+		}
+
 		if (Char.ischangingMap)
 		{
-			if (now - lastChangeMapRequestTime > 1200L)
+			if (now - lastChangeMapRequestTime > 500L)
 			{
 				Char.ischangingMap = false;
 				Char.isLockKey = false;
@@ -1252,32 +1260,24 @@ public class ModManager : IActionListener
 			}
 		}
 
-		checkAutoActivateTDLT();
-
-		GameScr.canAutoPlay = true;
-
 		string wpName = (wp.popup != null && wp.popup.says != null && wp.popup.says.Length > 0) ? wp.popup.says[0] : "Cổng";
 		int dist = Res.distance(myChar.cx, myChar.cy, targetX, targetY);
 
 		int startX = myChar.cx;
 		int startY = myChar.cy;
 
-		// 1. Dịch chuyển tức thời trên màn hình client
-		myChar.cx = targetX;
-		myChar.cy = targetY;
-
-		bool hasGround = TileMap.tileTypeAt(targetX, targetY + 12, 2);
-		myChar.statusMe = hasGround ? 1 : 10;
-		myChar.cvy = 0;
-		myChar.cvx = 0;
-		myChar.delayFall = 50;
-
-		int bagIdx = findAutoTrainBagIndex();
-		bool hasTDLT = isRealTDLTActive() || (bagIdx >= 0);
+		bool hasTDLT = isRealTDLTActive();
 
 		if (hasTDLT)
 		{
-			// Có TDLT hoặc có Giáp Luyện Tập: Dịch chuyển tức thời 0ms
+			// Có TDLT: Dịch chuyển tức thời 0ms
+			myChar.cx = targetX;
+			myChar.cy = targetY;
+			bool hasGround = TileMap.tileTypeAt(targetX, targetY + 12, 2);
+			myChar.statusMe = hasGround ? 1 : 10;
+			myChar.cvy = 0;
+			myChar.cvx = 0;
+			myChar.delayFall = 50;
 			isPathTeleporting = false;
 			pathPendingWaypoint = null;
 			sendDirectMove(targetX, targetY);
@@ -1285,7 +1285,7 @@ public class ModManager : IActionListener
 		}
 		else
 		{
-			// Không có TDLT / Giáp: Đi chuỗi tọa độ vi mô 70px an toàn qua các frame, không spam 0ms
+			// Không có TDLT: Lướt siêu tốc 65px/12ms mượt mà đến cổng, không spam 0ms, không ngắt kết nối
 			isPathTeleporting = true;
 			pathCurrentX = startX;
 			pathCurrentY = startY;
@@ -1329,17 +1329,6 @@ public class ModManager : IActionListener
 		else
 		{
 			Service.gI().requestChangeMap();
-		}
-
-		if (wp.popup != null && wp.popup.command != null)
-		{
-			try
-			{
-				wp.popup.command.performAction();
-			}
-			catch (Exception)
-			{
-			}
 		}
 	}
 
