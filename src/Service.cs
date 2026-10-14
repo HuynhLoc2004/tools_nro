@@ -958,15 +958,16 @@ public class Service
 		int num = Char.myCharz().cx - Char.myCharz().cxSend;
 		int num2 = Char.myCharz().cy - Char.myCharz().cySend;
 		bool force = isForceSendMove;
-		if (!isForceSendMove)
+		long now = mSystem.currentTimeMillis();
+		if (!force)
 		{
 			if (Char.ischangingMap || (num == 0 && num2 == 0) || Controller.isStopReadMessage || Char.myCharz().isTeleport || Char.myCharz().cy <= 0 || Char.myCharz().telePortSkill)
 			{
 				return;
 			}
 
-			long now = mSystem.currentTimeMillis();
-			if (now - lastCharMoveSendTime < 35L && (System.Math.Abs(num) < 48 && System.Math.Abs(num2) < 48))
+			// Giới hạn tần số gửi gói tin charMove để không bao giờ bị nghẽn mạng / ngắt kết nối [4] khi chơi tốc độ cao x10
+			if (now - lastCharMoveSendTime < 35L)
 			{
 				return;
 			}
@@ -975,7 +976,11 @@ public class Service
 		else
 		{
 			isForceSendMove = false;
-			lastCharMoveSendTime = mSystem.currentTimeMillis();
+			if (now - lastCharMoveSendTime < 15L)
+			{
+				return;
+			}
+			lastCharMoveSendTime = now;
 		}
 
 		try

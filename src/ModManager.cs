@@ -251,7 +251,8 @@ public class ModManager : IActionListener
 
 	public static bool isMapChangeCooldown()
 	{
-		return mSystem.currentTimeMillis() - lastChangeMapSuccessTime < 400L;
+		long cd = (long)Mathf.Max(100f, 350f / Mathf.Sqrt(currentSpeed));
+		return mSystem.currentTimeMillis() - lastChangeMapSuccessTime < cd;
 	}
 
 	public static void onMapLoaded()
@@ -657,10 +658,11 @@ public class ModManager : IActionListener
 				updateAutoDrop(now);
 			}
 
-			// Xử lý Lướt Siêu Tốc Vi Mô (Dành cho khi không có TDLT - 65px/bước cứ mỗi 18ms)
+			// Xử lý Lướt Siêu Tốc Vi Mô Đồng Bộ Tốc Độ (Dành cho khi không có TDLT)
 			if (isFastDashing)
 			{
-				if (now - lastDashStepTime >= 18L)
+				long stepInterval = (long)Mathf.Max(4f, 20f / currentSpeed);
+				if (now - lastDashStepTime >= stepInterval)
 				{
 					lastDashStepTime = now;
 					dashCurrentStep++;
@@ -685,7 +687,8 @@ public class ModManager : IActionListener
 								teleportTargetX = dashTargetX;
 								teleportTargetY = dashTargetY;
 								pendingWaypoint = dashWaypoint;
-								pendingChangeMapSendTime = now + 60L;
+								long changeMapDelay = (long)Mathf.Max(15f, 50f / currentSpeed);
+								pendingChangeMapSendTime = now + changeMapDelay;
 								dashWaypoint = null;
 							}
 						}
@@ -698,14 +701,20 @@ public class ModManager : IActionListener
 							myChar.statusMe = 10;
 							myChar.cvy = 0;
 							myChar.cvx = 0;
-							Service.isForceSendMove = true;
-							Service.gI().charMove();
+
+							// Chỉ gửi packet trung gian tối đa 1 lần ở giữa đường (nếu từ 4 bước trở lên)
+							// Tránh spam packet charMove làm đứt kết nối [4] khi chơi tốc độ cao x10
+							if (dashTotalSteps >= 4 && dashCurrentStep == dashTotalSteps / 2)
+							{
+								Service.isForceSendMove = true;
+								Service.gI().charMove();
+							}
 						}
 					}
 				}
 			}
 
-			// Xử lý gửi packet chuyển map sau 60ms để Server kịp nhận toạ độ charMove trước
+			// Xử lý gửi packet chuyển map sau độ trễ thích ứng tốc độ để Server nhận toạ độ charMove trước
 			if (pendingWaypoint != null && now >= pendingChangeMapSendTime)
 			{
 				Waypoint wp = pendingWaypoint;
@@ -1002,9 +1011,10 @@ public class ModManager : IActionListener
 			dashStartY = myChar.cy;
 			dashTargetX = targetX;
 			dashTargetY = targetY;
-			int stepSize = 65;
+			int stepSize = Mathf.Clamp(Mathf.RoundToInt(60f + (currentSpeed - 1f) * 12f), 60, 180);
 			dashTotalSteps = (dist + stepSize - 1) / stepSize;
-			if (dashTotalSteps < 1) dashTotalSteps = 1;
+			if (dashTotalSteps < 2) dashTotalSteps = 2;
+			if (dashTotalSteps > 6) dashTotalSteps = 6;
 			dashCurrentStep = 0;
 			lastDashStepTime = 0L;
 			dashWaypoint = null;
@@ -1024,14 +1034,16 @@ public class ModManager : IActionListener
 			return;
 		}
 
-		// 2. Cooldown an toàn 700ms sau khi map vừa load xong (cho Server ổn định session, chống mất sóng [4])
-		if (now - lastChangeMapSuccessTime < 700L)
+		// 2. Cooldown an toàn sau khi map vừa load xong (thích ứng theo tốc độ hiện tại)
+		long settleCooldown = (long)Mathf.Max(150f, 600f / Mathf.Sqrt(currentSpeed));
+		if (now - lastChangeMapSuccessTime < settleCooldown)
 		{
 			return;
 		}
 
-		// 3. Cooldown giữa các lần yêu cầu hoặc khi đang chờ gửi packet 60ms
-		if (now - lastChangeMapRequestTime < 800L || pendingWaypoint != null)
+		// 3. Cooldown giữa các lần yêu cầu hoặc khi đang chờ gửi packet
+		long requestCooldown = (long)Mathf.Max(180f, 700f / Mathf.Sqrt(currentSpeed));
+		if (now - lastChangeMapRequestTime < requestCooldown || pendingWaypoint != null)
 		{
 			return;
 		}
@@ -1241,24 +1253,24 @@ public class ModManager : IActionListener
 			teleportTargetX = targetX;
 			teleportTargetY = targetY;
 			pendingWaypoint = wp;
-			pendingChangeMapSendTime = mSystem.currentTimeMillis() + 60L;
+			long changeMapDelay = (long)Mathf.Max(15f, 50f / currentSpeed);
+			pendingChangeMapSendTime = mSystem.currentTimeMillis() + changeMapDelay;
 
 			notify("Dịch map -> " + wpName);
 		}
 		else
 		{
 			// TRƯỜNG HỢP 2: KHÔNG CÓ TDLT TRÊN SERVER & Ở XA CỔNG (> 75px)
-			// LƯỚT SIÊU TỐC VI MÔ (FAST SUB-STEP DASH - 65px/bước cứ mỗi 18ms):
-			// Server chấp nhận 100% tất cả các bước vì mỗi bước <= 70px (chuẩn anti-cheat của game)
-			// Tổng thời gian chỉ khoảng 250ms - 300ms (như Flash Step), không bao giờ bị Server giật ngược về map cũ!
+			// LƯỚT SIÊU TỐC ĐỒNG BỘ THEO TỐC ĐỘ HIỆN TẠI (CHỊU TỐC ĐỘ TỐI ĐA MAX 10 KHÔNG NGẮT KẾT NỐI):
 			isFastDashing = true;
 			dashStartX = myChar.cx;
 			dashStartY = myChar.cy;
 			dashTargetX = targetX;
 			dashTargetY = targetY;
-			int stepSize = 65;
+			int stepSize = Mathf.Clamp(Mathf.RoundToInt(60f + (currentSpeed - 1f) * 12f), 60, 180);
 			dashTotalSteps = (dist + stepSize - 1) / stepSize;
-			if (dashTotalSteps < 1) dashTotalSteps = 1;
+			if (dashTotalSteps < 2) dashTotalSteps = 2;
+			if (dashTotalSteps > 6) dashTotalSteps = 6;
 			dashCurrentStep = 0;
 			lastDashStepTime = 0L;
 			dashWaypoint = wp;
