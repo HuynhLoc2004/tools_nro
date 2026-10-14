@@ -738,78 +738,9 @@ public class ModManager : IActionListener
 
 	public static bool hasTrainingGearOrBuff()
 	{
-		try
-		{
-			if (GameScr.canAutoPlay)
-			{
-				return true;
-			}
-
-			Char myChar = Char.myCharz();
-			if (myChar == null) return false;
-
-			// 1. Kiểm tra Giáp Luyện Tập đang mặc trên người (arrItemBody)
-			if (myChar.arrItemBody != null)
-			{
-				for (int i = 0; i < myChar.arrItemBody.Length; i++)
-				{
-					Item it = myChar.arrItemBody[i];
-					if (it != null && it.template != null)
-					{
-						int id = it.template.id;
-						if (id == 529 || id == 530 || id == 531 || id == 521)
-						{
-							return true;
-						}
-						if (!string.IsNullOrEmpty(it.template.name))
-						{
-							string name = it.template.name.ToLower();
-							if (name.Contains("luyện tập") || name.Contains("luyen tap") || name.Contains("tập luyện") || name.Contains("tap luyen"))
-							{
-								return true;
-							}
-						}
-					}
-				}
-			}
-
-			// 2. Quét Char.vItemTime (Icon bánh răng vàng đặc trưng của TDLT)
-			if (Char.vItemTime != null)
-			{
-				for (int j = 0; j < Char.vItemTime.size(); j++)
-				{
-					ItemTime t = (ItemTime)Char.vItemTime.elementAt(j);
-					if (t != null)
-					{
-						if (t.idIcon == 4387 || t.idIcon == 4028 || t.idIcon == 521 || t.idIcon == 4330)
-						{
-							return true;
-						}
-					}
-				}
-			}
-
-			// 3. Quét GameScr.textTime nếu có
-			if (GameScr.textTime != null)
-			{
-				for (int j = 0; j < GameScr.textTime.size(); j++)
-				{
-					ItemTime t2 = (ItemTime)GameScr.textTime.elementAt(j);
-					if (t2 != null && !string.IsNullOrEmpty(t2.text))
-					{
-						string s = t2.text.ToLower();
-						if (s.Contains("luyện tập") || s.Contains("luyen tap") || s.Contains("tự động") || s.Contains("tu dong"))
-						{
-							return true;
-						}
-					}
-				}
-			}
-		}
-		catch (Exception)
-		{
-		}
-		return false;
+		// Luôn giả lập có Tự Động Luyện Tập cho người chơi để dịch tức thời nhanh và mượt như nhánh main
+		GameScr.canAutoPlay = true;
+		return true;
 	}
 
 	public static int findAutoTrainBagIndex()
@@ -900,24 +831,16 @@ public class ModManager : IActionListener
 
 		checkAutoActivateTDLT();
 
-		int dist = Res.distance(myChar.cx, myChar.cy, targetX, targetY);
-		if (hasTrainingGearOrBuff() || dist <= 80)
-		{
-			myChar.cx = targetX;
-			myChar.cy = targetY;
-			myChar.statusMe = 1;
-			myChar.cvy = 0;
-			myChar.cvx = 0;
-			myChar.delayFall = 0;
+		GameScr.canAutoPlay = true;
+		myChar.cx = targetX;
+		myChar.cy = targetY;
+		myChar.statusMe = 1;
+		myChar.cvy = 0;
+		myChar.cvx = 0;
+		myChar.delayFall = 0;
 
-			Service.isForceSendMove = true;
-			Service.gI().charMove();
-		}
-		else
-		{
-			myChar.currentMovePoint = new MovePoint(targetX, targetY);
-			myChar.cdir = (targetX > myChar.cx) ? 1 : -1;
-		}
+		Service.isForceSendMove = true;
+		Service.gI().charMove();
 	}
 
 	public static void handleQuickMapChange(int dir)
@@ -1103,39 +1026,25 @@ public class ModManager : IActionListener
 
 		checkAutoActivateTDLT();
 
+		GameScr.canAutoPlay = true;
+
+		// DỊCH CHUYỂN TỨC THỜI 1 FRAME (CHUẨN NHÁNH MAIN - KHÔNG CHẠY BỘ)
+		myChar.cx = targetX;
+		myChar.cy = targetY;
+
+		bool hasGround = TileMap.tileTypeAt(targetX, targetY + 12, 2);
+		myChar.statusMe = hasGround ? 1 : 10;
+		myChar.cvy = 0;
+		myChar.cvx = 0;
+		myChar.delayFall = 0;
+
+		Service.isForceSendMove = true;
+		Service.gI().charMove();
+
+		doRequestChangeMap(wp, targetX, targetY);
+
 		string wpName = (wp.popup != null && wp.popup.says != null && wp.popup.says.Length > 0) ? wp.popup.says[0] : "Cổng";
-		int dist = Res.distance(myChar.cx, myChar.cy, targetX, targetY);
-
-		// TRƯỜNG HỢP 1: CÓ GIÁP LUYỆN TẬP HOẶC TDLT HOẶC KHOẢNG CÁCH GẦN (<= 80px)
-		if (hasTrainingGearOrBuff() || dist <= 80)
-		{
-			myChar.cx = targetX;
-			myChar.cy = targetY;
-
-			bool hasGround = TileMap.tileTypeAt(targetX, targetY + 12, 2);
-			myChar.statusMe = hasGround ? 1 : 10;
-			myChar.cvy = 0;
-			myChar.cvx = 0;
-			myChar.delayFall = 0;
-
-			Service.isForceSendMove = true;
-			Service.gI().charMove();
-
-			doRequestChangeMap(wp, targetX, targetY);
-			notify("Dịch map -> " + wpName);
-		}
-		else
-		{
-			// TRƯỜNG HỢP 2: KHÔNG CÓ GIÁP LUYỆN TẬP & Ở XA CỔNG
-			// Cho nhân vật di chuyển an toàn đến cổng để game tự kích hoạt qua map mượt mà, không bị Server kick mất sóng [4]
-			myChar.currentMovePoint = new MovePoint(targetX, targetY);
-			myChar.cdir = (targetX > myChar.cx) ? 1 : -1;
-			if (wp.isEnter)
-			{
-				myChar.endMovePointCommand = new Command(null, wp, 2, null);
-			}
-			notify("Đang chạy đến " + wpName + " (Đeo Giáp Luyện Tập để dịch tức thời)");
-		}
+		notify("Dịch map -> " + wpName);
 	}
 
 	private static void doRequestChangeMap(Waypoint wp, int targetX, int targetY)
