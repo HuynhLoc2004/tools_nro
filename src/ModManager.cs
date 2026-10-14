@@ -267,77 +267,8 @@ public class ModManager : IActionListener
 
 	public static void updatePathTeleport(long now)
 	{
-		try
-		{
-			if (now - lastPathStepTime < 25L)
-			{
-				return;
-			}
-			lastPathStepTime = now;
-
-			Char myChar = Char.myCharz();
-			if (myChar == null || Char.isLoadingMap)
-			{
-				isPathTeleporting = false;
-				pathPendingWaypoint = null;
-				return;
-			}
-
-			int dist = Res.distance(pathCurrentX, pathCurrentY, pathTargetX, pathTargetY);
-			int stepSize = 120;
-
-			if (dist <= stepSize)
-			{
-				pathCurrentX = pathTargetX;
-				pathCurrentY = pathTargetY;
-				myChar.cx = pathTargetX;
-				myChar.cy = pathTargetY;
-				myChar.cxSend = pathTargetX;
-				myChar.cySend = pathTargetY;
-				myChar.cvy = 0;
-				myChar.cvx = 0;
-				myChar.delayFall = 50;
-				bool hasGround = TileMap.tileTypeAt(pathTargetX, pathTargetY + 12, 2);
-				myChar.statusMe = hasGround ? 1 : 10;
-				isPathTeleporting = false;
-
-				if (pathPendingWaypoint != null)
-				{
-					Waypoint wp = pathPendingWaypoint;
-					pathPendingWaypoint = null;
-					triggerWaypointChangeMap(wp);
-				}
-				else
-				{
-					Service.isForceSendMove = true;
-					Service.gI().charMove();
-				}
-			}
-			else
-			{
-				pathCurrentX += (pathTargetX - pathCurrentX) * stepSize / dist;
-				pathCurrentY += (pathTargetY - pathCurrentY) * stepSize / dist;
-				myChar.cx = pathCurrentX;
-				myChar.cy = pathCurrentY;
-				myChar.cdir = (pathTargetX > pathCurrentX) ? 1 : -1;
-				myChar.statusMe = 2; // Hiển thị lướt / chạy cực mượt
-				myChar.cvy = 0;
-				myChar.cvx = 0;
-
-				// Chỉ gửi gói tin move tối đa 70ms/lần trên đường lướt để tránh nghẽn socket
-				if (now - lastMoveSendTime >= 70L)
-				{
-					lastMoveSendTime = now;
-					Service.isForceSendMove = true;
-					Service.gI().charMove();
-				}
-			}
-		}
-		catch (Exception)
-		{
-			isPathTeleporting = false;
-			pathPendingWaypoint = null;
-		}
+		isPathTeleporting = false;
+		pathPendingWaypoint = null;
 	}
 
 	public static bool isMapChangeCooldown()
@@ -1061,40 +992,20 @@ public class ModManager : IActionListener
 
 		int targetY = findGroundY(targetX);
 
+		myChar.cx = targetX;
+		myChar.cy = targetY;
+		myChar.cxSend = targetX;
+		myChar.cySend = targetY;
 		myChar.currentMovePoint = null;
-		GameCanvas.clearKeyHold();
-		GameCanvas.clearKeyPressed();
-
-		GameScr.canAutoPlay = true;
-
-		int startX = myChar.cx;
-		int startY = myChar.cy;
-
-		bool hasTDLT = isRealTDLTActive();
-
-		if (hasTDLT)
-		{
-			myChar.cx = targetX;
-			myChar.cy = targetY;
-			myChar.statusMe = 1;
-			myChar.cvy = 0;
-			myChar.cvx = 0;
-			myChar.delayFall = 50;
-			isPathTeleporting = false;
-			pathPendingWaypoint = null;
-			Service.isForceSendMove = true;
-			Service.gI().charMove();
-		}
-		else
-		{
-			isPathTeleporting = true;
-			pathCurrentX = startX;
-			pathCurrentY = startY;
-			pathTargetX = targetX;
-			pathTargetY = targetY;
-			pathPendingWaypoint = null;
-			lastPathStepTime = 0L;
-		}
+		myChar.endMovePointCommand = null;
+		myChar.statusMe = 1;
+		myChar.cvy = 0;
+		myChar.cvx = 0;
+		myChar.delayFall = 50;
+		isPathTeleporting = false;
+		pathPendingWaypoint = null;
+		Service.isForceSendMove = true;
+		Service.gI().charMove();
 	}
 
 	public static void handleQuickMapChange(int dir)
@@ -1279,39 +1190,22 @@ public class ModManager : IActionListener
 
 		string wpName = (wp.popup != null && wp.popup.says != null && wp.popup.says.Length > 0) ? wp.popup.says[0] : "Cổng";
 
-		int startX = myChar.cx;
-		int startY = myChar.cy;
+		// Dịch chuyển tức thời đến thẳng tọa độ cổng chuẩn xác (không lướt, không rơi vực)
+		myChar.cx = targetX;
+		myChar.cy = targetY;
+		myChar.cxSend = targetX;
+		myChar.cySend = targetY;
+		myChar.currentMovePoint = null;
+		myChar.endMovePointCommand = null;
+		myChar.cvy = 0;
+		myChar.cvx = 0;
+		myChar.delayFall = 50;
+		bool hasGround = TileMap.tileTypeAt(targetX, targetY + 12, 2);
+		myChar.statusMe = hasGround ? 1 : 10;
+		isPathTeleporting = false;
+		pathPendingWaypoint = null;
 
-		bool hasTDLT = isRealTDLTActive();
-
-		if (hasTDLT)
-		{
-			// Có TDLT: Dịch chuyển tức thời 0ms
-			myChar.cx = targetX;
-			myChar.cy = targetY;
-			myChar.cxSend = targetX;
-			myChar.cySend = targetY;
-			bool hasGround = TileMap.tileTypeAt(targetX, targetY + 12, 2);
-			myChar.statusMe = hasGround ? 1 : 10;
-			myChar.cvy = 0;
-			myChar.cvx = 0;
-			myChar.delayFall = 50;
-			isPathTeleporting = false;
-			pathPendingWaypoint = null;
-			triggerWaypointChangeMap(wp);
-		}
-		else
-		{
-			// Không có TDLT: Lướt siêu tốc đến cổng mượt mà, không spam 0ms, không ngắt kết nối
-			isPathTeleporting = true;
-			pathCurrentX = startX;
-			pathCurrentY = startY;
-			pathTargetX = targetX;
-			pathTargetY = targetY;
-			pathPendingWaypoint = wp;
-			lastPathStepTime = 0L;
-		}
-
+		triggerWaypointChangeMap(wp);
 		notify("Dịch map -> " + wpName);
 	}
 
@@ -1324,40 +1218,34 @@ public class ModManager : IActionListener
 		lastTeleportRequestMapTime = lastChangeMapRequestTime;
 		teleportRequestCount = 0;
 
+		Char myChar = Char.myCharz();
+		if (myChar != null)
+		{
+			myChar.currentMovePoint = null;
+			myChar.endMovePointCommand = null;
+			myChar.cvx = 0;
+			myChar.cvy = 0;
+		}
+
 		// 1. Luôn gửi tọa độ hiện tại đến Server trước khi yêu cầu đổi map
 		Service.isForceSendMove = true;
 		Service.gI().charMove();
 
-		// 2. Kích hoạt đổi map
-		if (wp.isEnter)
-		{
-			if (wp.popup != null && wp.popup.command != null)
-			{
-				wp.popup.command.performAction();
-			}
-			else
-			{
-				wp.perform(2, null);
-			}
-		}
-		else if (wp.isOffline || TileMap.isTrainingMap())
+		// 2. Gửi lệnh đổi map trực tiếp đến Server (KHÔNG qua popup.command tránh bị gán currentMovePoint gây chạy/rơi vực)
+		if (wp.isOffline || TileMap.isTrainingMap())
 		{
 			Service.gI().getMapOffline();
-			Char.isLockKey = true;
-			Char.ischangingMap = true;
-			GameCanvas.clearKeyHold();
-			GameCanvas.clearKeyPressed();
-			InfoDlg.showWait();
 		}
 		else
 		{
 			Service.gI().requestChangeMap();
-			Char.isLockKey = true;
-			Char.ischangingMap = true;
-			GameCanvas.clearKeyHold();
-			GameCanvas.clearKeyPressed();
-			InfoDlg.showWait();
 		}
+
+		Char.isLockKey = true;
+		Char.ischangingMap = true;
+		GameCanvas.clearKeyHold();
+		GameCanvas.clearKeyPressed();
+		InfoDlg.showWait();
 	}
 
 	// Kiểm tra skill có phải là skill hỗ trợ / buff / cứu người / nạp KI không (Không dùng để pem quái)

@@ -1664,7 +1664,7 @@ public class Char : IMapObject
 
 	public Waypoint isInEnterOfflinePoint()
 	{
-		if (ModManager.isMapChangeCooldown() || ModManager.isPathTeleporting)
+		if (ModManager.isMapChangeCooldown())
 		{
 			return null;
 		}
@@ -1687,7 +1687,7 @@ public class Char : IMapObject
 
 	public Waypoint isInEnterOnlinePoint()
 	{
-		if (ModManager.isMapChangeCooldown() || ModManager.isPathTeleporting)
+		if (ModManager.isMapChangeCooldown())
 		{
 			return null;
 		}
@@ -1710,7 +1710,7 @@ public class Char : IMapObject
 
 	public bool isInWaypoint()
 	{
-		if (ModManager.isMapChangeCooldown() || ModManager.isPathTeleporting)
+		if (ModManager.isMapChangeCooldown())
 		{
 			return false;
 		}
